@@ -510,26 +510,17 @@ struct ChatWorkspaceView: View {
       }
       .environment(\.ottoPalette, palette)
     }
-    .sheet(item: $harnessKeySetup) { request in
-      OttoHarnessKeySetupSheet(
-        services: services,
-        cancel: { harnessKeySetup = nil },
-        ready: {
-          harnessKeySetup = nil
-          Task { await launchSession(.openAI, folder: request.folder, projectID: request.projectID) }
+    .modifier(
+      HarnessKeySetupPresentation(
+        request: $harnessKeySetup, services: services, palette: palette,
+        launch: { request in
+          Task {
+            await launchSession(.openAI, folder: request.folder, projectID: request.projectID)
+          }
         }
       )
-      .environment(\.ottoPalette, palette)
-    }
-    .alert(
-      "Couldn't start the session",
-      isPresented: Binding(
-        get: { sessionLaunchError != nil }, set: { if !$0 { sessionLaunchError = nil } })
-    ) {
-      Button("OK", role: .cancel) { sessionLaunchError = nil }
-    } message: {
-      Text(sessionLaunchError ?? "")
-    }
+    )
+    .modifier(SessionLaunchErrorAlert(message: $sessionLaunchError))
     .sheet(item: $editingBot) { profile in
       HireBotSheet(services: services, editing: profile) { _ in }
         .environment(\.ottoPalette, palette)
@@ -5978,6 +5969,46 @@ private struct SessionRenameAlert: ViewModifier {
         .disabled(trimmedName.isEmpty)
     } message: {
       Text("Name this conversation without changing the bot or its history.")
+    }
+  }
+}
+
+/// Asks for a vendor key or local server before a New session on Otto's harness, then starts it.
+/// A separate modifier, because an inline sheet plus alert made Xcode 26.3 give up type-checking
+/// `ChatWorkspaceView.body` in CI.
+private struct HarnessKeySetupPresentation: ViewModifier {
+  @Binding var request: HarnessKeySetupRequest?
+  let services: ApplicationServices
+  let palette: OttoPalette
+  let launch: (HarnessKeySetupRequest) -> Void
+
+  func body(content: Content) -> some View {
+    content.sheet(item: $request) { pending in
+      OttoHarnessKeySetupSheet(
+        services: services,
+        cancel: { request = nil },
+        ready: {
+          request = nil
+          launch(pending)
+        }
+      )
+      .environment(\.ottoPalette, palette)
+    }
+  }
+}
+
+/// Says why a one-off session could not start.
+private struct SessionLaunchErrorAlert: ViewModifier {
+  @Binding var message: String?
+
+  func body(content: Content) -> some View {
+    content.alert(
+      "Couldn't start the session",
+      isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })
+    ) {
+      Button("OK", role: .cancel) { message = nil }
+    } message: {
+      Text(message ?? "")
     }
   }
 }
