@@ -4,7 +4,11 @@ All notable changes to Otto (called Muse before 0.2.0) are documented here. Each
 published verbatim as the in-app update notes and on the download site, so write for users:
 lead with what they can now do, not how it was implemented.
 
-## Unreleased
+## 0.2.14 — 2026-11-02
+
+### New
+
+- **New session asks for an API key before starting Otto Harness.** Pick Otto's own harness with no vendor key or local server saved and a sheet asks for one, then starts the session for you. If a session cannot start, Otto now says why instead of doing nothing. In New session the harness is listed as "Otto".
 
 ### Fixed
 
