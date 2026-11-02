@@ -201,7 +201,7 @@ struct OttoBrowserTabStrip: View {
 
   /// Whether the tab row is wider than its viewport. Half a point of slack keeps the control
   /// from flickering on a strip that exactly fits.
-  static func tabsOverflow(contentWidth: CGFloat, containerWidth: CGFloat) -> Bool {
+  nonisolated static func tabsOverflow(contentWidth: CGFloat, containerWidth: CGFloat) -> Bool {
     containerWidth > 0 && contentWidth > containerWidth + 0.5
   }
 
