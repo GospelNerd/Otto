@@ -11,10 +11,12 @@
   ///   tool:<output file>\n<tool name>\n<json>  call an Otto tool in the active space
   ///   permission:<agent UUID>:approve|deny:<report file>  what the chat card's Approve/Deny do
   ///   settings[:<page>]                        open the Settings window, optionally on a page
+  ///   go:<place>                               show Home, or a Chat place: conversation, browser, files…
   @MainActor
   final class OttoDevProbe {
     static let shared = OttoDevProbe()
     static let openSettingsNotification = Notification.Name("io.openotto.dev.probe.openSettings")
+    static let goNotification = Notification.Name("io.openotto.dev.probe.go")
     private weak var services: ApplicationServices?
     private var installed = false
 
@@ -42,6 +44,10 @@
         }
         NSApp.activate()
         NotificationCenter.default.post(name: Self.openSettingsNotification, object: nil)
+      } else if command.hasPrefix("go:") {
+        NSApp.activate()
+        NotificationCenter.default.post(
+          name: Self.goNotification, object: String(command.dropFirst(3)))
       } else if command.hasPrefix("permission:") {
         // permission:<agent UUID>:approve|deny:<report file>
         let parts = command.dropFirst(11).split(separator: ":", maxSplits: 2).map(String.init)
@@ -68,6 +74,13 @@
         let input = parts.count == 3 ? parts[2] : "{}"
         Task { await self.callTool(parts[1], json: input, output: output) }
       }
+    }
+
+    /// Appends a line to /tmp/otto-probe/probe.log so agent shells can follow what the app did.
+    static func log(_ line: String) {
+      let path = "/tmp/otto-probe/probe.log"
+      let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+      try? (text + line + "\n").write(toFile: path, atomically: true, encoding: .utf8)
     }
 
     private func snapshot(into directory: String) {

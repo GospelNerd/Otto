@@ -134,7 +134,13 @@ public actor VoiceSession {
       await audioTransport?.stop()
       await provider.disconnect()
       self.provider = nil
-      current.lastError = error.localizedDescription
+      current.lastError = VoiceFailureText.message(for: error)
+      appendTrace(
+        kind: .error,
+        title: "Voice connection failed",
+        detail: VoiceFailureText.technicalDetail(for: error),
+        succeeded: false
+      )
       transition(to: .error)
     }
   }
@@ -191,7 +197,13 @@ public actor VoiceSession {
       do {
         try await startMicrophoneInput(provider: streamingProvider)
       } catch {
-        current.lastError = error.localizedDescription
+        current.lastError = VoiceFailureText.message(for: error)
+        appendTrace(
+          kind: .error,
+          title: "Microphone failed",
+          detail: VoiceFailureText.technicalDetail(for: error),
+          succeeded: false
+        )
         transition(to: .error)
       }
       return
@@ -245,6 +257,8 @@ public actor VoiceSession {
       userInputActive = true
       failedCallSignatures.removeAll()
       currentTurnID = UUID()
+      // A new request supersedes whatever went wrong last time.
+      current.lastError = nil
       provisionalUserRecordID = nil
       if [.speaking, .thinking, .callingTool].contains(current.state), !allowsOverlappingAudio {
         await audioTransport?.stopPlayback()
@@ -294,6 +308,7 @@ public actor VoiceSession {
       lastFinalTranscriptAt = .now
       guard !isReplay else { return }
       current.lastTranscript = text
+      current.lastError = nil
       if currentTurnID == nil { currentTurnID = UUID() }
       upsertUserRecord(text: text, authority: .authoritative)
       provisionalUserRecordID = nil
@@ -476,16 +491,16 @@ public actor VoiceSession {
         succeeded: true
       )
     } catch {
-      current.lastError = error.localizedDescription
+      let message = VoiceFailureText.message(for: error)
+      current.lastError = message
       appendTrace(
         kind: .toolResult,
         title: VoiceTaskDelegationTool.name,
-        detail: error.localizedDescription,
+        detail: VoiceFailureText.technicalDetail(for: error),
         succeeded: false
       )
       if current.state == .listening {
-        await provider?.sendNotification(
-          "The delegated work could not start: \(error.localizedDescription)")
+        await provider?.sendNotification("The delegated work could not start: \(message)")
       }
     }
     delegationTasks[id] = nil
@@ -696,10 +711,9 @@ public actor VoiceSession {
           defaults: permissionDefaults
         )
         : arguments
-      let output = try await registry.call(
+      let output = try await callDelegatedTool(
         name: name,
-        input: resolvedArguments,
-        context: executionContext(for: name),
+        arguments: resolvedArguments,
         requestID: id
       )
       guard !Task.isCancelled else {
@@ -725,24 +739,71 @@ public actor VoiceSession {
         finishDelegation(id: id, turnID: turnID)
         return
       }
+      let message = VoiceFailureText.message(for: error)
       if currentTurnID == turnID {
         failedCallSignatures.insert(callSignature)
-        current.lastError = error.localizedDescription
+        current.lastError = message
       }
       appendTrace(
         kind: .toolResult,
         title: name,
-        detail: error.localizedDescription,
+        detail: VoiceFailureText.technicalDetail(for: error),
         succeeded: false
       )
+      // The realtime model repeats tool errors aloud, so it gets the same wording the person sees.
       await provider?.sendToolResult(
         VoiceToolResult(
           callID: id,
-          result: .object(["error": .string(error.localizedDescription)]),
+          result: .object(["error": .string(message)]),
           isError: true
         ))
     }
     finishDelegation(id: id, turnID: turnID, nextState: .thinking)
+  }
+
+  /// Runs a tool the realtime model asked for. Spoken input for an agent goes through the relay
+  /// so an agent that had just exited is continued rather than reported as a closed transport.
+  private func callDelegatedTool(
+    name: String,
+    arguments: JSONValue,
+    requestID: String
+  ) async throws -> JSONValue {
+    if name == VoiceAgentRelay.inputToolName,
+      let agentID = arguments["agentID"]?.stringValue.flatMap(UUID.init(uuidString:)),
+      let text = arguments["text"]?.stringValue
+    {
+      // The model chose send_input without telling us why. Read the state first so an answer
+      // to a permission prompt is never replayed as a new turn if the agent has gone.
+      let status = try? await registry.call(
+        name: VoiceAgentRelay.statusToolName,
+        input: .object(["agentID": .string(agentID.uuidString)]),
+        context: executionContext(for: VoiceAgentRelay.statusToolName)
+      )
+      let delivery = try await VoiceAgentRelay.send(
+        toolName: name,
+        agentID: agentID,
+        text: text,
+        lastKnownState: status?["state"]?.stringValue,
+        registry: registry,
+        context: executionContext(for: name),
+        requestID: requestID
+      )
+      if delivery.continuedAfterExit {
+        appendTrace(
+          kind: .session,
+          title: "Agent had exited; continued as a prompt",
+          detail: "agent.send_input found the agent's process gone, so the text was sent with "
+            + "agent.send_prompt instead."
+        )
+      }
+      return delivery.output
+    }
+    return try await registry.call(
+      name: name,
+      input: arguments,
+      context: executionContext(for: name),
+      requestID: requestID
+    )
   }
 
   private func finishDelegation(
@@ -947,6 +1008,7 @@ public actor VoiceSession {
     guard [.speaking, .thinking, .callingTool].contains(current.state) else { return }
     userInputActive = true
     currentTurnID = UUID()
+    current.lastError = nil
     failedCallSignatures.removeAll()
     if allowsOverlappingAudio {
       provisionalUserRecordID = nil
@@ -1045,49 +1107,50 @@ public actor VoiceSession {
         let waitingStates = ["WAITING_PERMISSION", "WAITING_USER"]
         let toolName =
           waitingStates.contains(status["state"]?.stringValue ?? "")
-          ? "agent.send_input"
-          : "agent.send_prompt"
-        let arguments: JSONValue =
-          if toolName == "agent.send_input" {
-            .object([
-              "agentID": .string(intent.targetID.uuidString),
-              "text": .string(intent.prompt),
-            ])
-          } else {
-            .object([
-              "agentID": .string(intent.targetID.uuidString),
-              "prompt": .string(intent.prompt),
-            ])
-          }
+          ? VoiceAgentRelay.inputToolName
+          : VoiceAgentRelay.promptToolName
+        let arguments = VoiceAgentRelay.arguments(
+          for: toolName, agentID: intent.targetID, text: intent.prompt)
 
         appendTrace(kind: .toolRequest, title: toolName, detail: traceString(arguments))
-        let output = try await registry.call(
-          name: toolName,
-          input: arguments,
+        let delivery = try await VoiceAgentRelay.send(
+          toolName: toolName,
+          agentID: intent.targetID,
+          text: intent.prompt,
+          lastKnownState: status["state"]?.stringValue,
+          registry: registry,
           context: context
         )
+        if delivery.continuedAfterExit {
+          appendTrace(
+            kind: .session,
+            title: "Agent had exited; continued as a prompt",
+            detail: "agent.send_input found the agent's process gone, so the text was sent with "
+              + "agent.send_prompt instead."
+          )
+        }
         actionContinuation.yield(
           VoiceActionEvent(
             callID: "local-verbatim-\(UUID().uuidString)",
-            toolName: toolName,
-            output: output
+            toolName: delivery.toolName,
+            output: delivery.output
           )
         )
         current.lastError = nil
         current.lastConfirmation = "Sent verbatim to \(intent.targetName)"
         appendTrace(
           kind: .toolResult,
-          title: toolName,
-          detail: traceString(output),
+          title: delivery.toolName,
+          detail: traceString(delivery.output),
           succeeded: true
         )
       } catch {
-        current.lastError = error.localizedDescription
+        current.lastError = VoiceFailureText.message(for: error)
         current.lastConfirmation = ""
         appendTrace(
           kind: .toolResult,
           title: "Verbatim relay",
-          detail: error.localizedDescription,
+          detail: VoiceFailureText.technicalDetail(for: error),
           succeeded: false
         )
       }

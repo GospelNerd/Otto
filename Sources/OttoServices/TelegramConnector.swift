@@ -229,6 +229,22 @@ public enum TelegramCommand: Equatable, Sendable {
     default: return text.hasPrefix("/") ? nil : .message(text)
     }
   }
+
+  /// A Telegram-style mention at the start of a message: `@instagram look at this` names a bot
+  /// the way `/bot @instagram look at this` does. The text after the mention may be empty.
+  /// Whether the mention is an Otto bot is for the caller to decide; `@someone` in the middle of
+  /// a sentence is never one.
+  public static func leadingMention(in raw: String) -> (handle: String, text: String)? {
+    let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard text.hasPrefix("@") else { return nil }
+    let split = text.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+    let token = String(split[0].dropFirst())
+    let handle = token.trimmingCharacters(in: CharacterSet(charactersIn: ",.:;!?"))
+    guard !handle.isEmpty else { return nil }
+    let rest =
+      split.count > 1 ? String(split[1]).trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    return (handle, rest)
+  }
 }
 
 public enum TelegramConnectionError: Error, LocalizedError {
@@ -445,12 +461,27 @@ public final class TelegramConnector: ObservableObject {
   private var messageTasks: [UUID: Task<Void, Never>] = [:]
   /// Photos and videos of one album, collected until Telegram stops delivering them.
   private var pendingAlbums: [String: PendingAlbum] = [:]
+  /// Messages waiting for each bot, oldest first. A bot takes one prompt per run, so what arrives
+  /// while it is working waits here instead of being bounced (issue #41).
+  private var queuedPrompts: [UUID: [QueuedPrompt]] = [:]
+  /// Bots whose queue a task is working through, by that task's id. One per bot keeps order.
+  private var queuePumps: [UUID: UUID] = [:]
 
   private struct PendingAlbum {
     var media: [TelegramMedia]
     var caption: String
     var generation: Int
   }
+
+  private struct QueuedPrompt {
+    let id = UUID()
+    let text: String
+    let chat: Int64
+    let client: TelegramBotTransport
+  }
+
+  /// More than this many waiting messages for one bot are refused, not silently dropped.
+  static let maxQueuedPrompts = 20
 
   /// One approval sent to Telegram, kept until it is answered, expires or the run moves on.
   private struct PendingApproval {
@@ -528,9 +559,42 @@ public final class TelegramConnector: ObservableObject {
     return allowed.first
   }
 
-  private func allowedBot(matching handle: String) -> AgentProfile? {
-    let wanted = handle.trimmingCharacters(in: CharacterSet(charactersIn: "@ ")).lowercased()
-    return allowedBots.first { $0.handle.lowercased() == wanted }
+  /// Saved bots the Mac owner has not allowed for Telegram. Named in /bots so a bot that is
+  /// missing from the list is explained, never silently unreachable.
+  private var botsNotAllowed: [AgentProfile] {
+    let allowed = Set(allowedBots.map(\.id))
+    return bots.filter { !allowed.contains($0.id) }
+  }
+
+  /// The one allowed bot `query` names by handle, name or a unique start of either.
+  private func allowedBot(matching query: String) -> AgentProfile? {
+    if case .bot(let bot) = TelegramBotRouting.match(query, in: allowedBots) { return bot }
+    return nil
+  }
+
+  /// The allowed bot a bare leading `@mention` names, with the rest of the message, or nil when
+  /// the text should reach this chat's bot unchanged. Only an exact handle or name counts:
+  /// "@max said we ship Friday" is a message about Max, not a prompt for @maxsassistant, and a
+  /// mention several bots start with is plain text rather than an ambiguity reply.
+  func mentionedBot(in text: String) -> (bot: AgentProfile, text: String)? {
+    guard let mention = TelegramCommand.leadingMention(in: text),
+      let bot = TelegramBotRouting.exactMatch(mention.handle, in: allowedBots)
+    else { return nil }
+    return (bot, mention.text)
+  }
+
+  func botsReply(for chat: Int64) -> String {
+    TelegramBotRouting.botsReply(
+      allowed: allowedBots, notAllowed: botsNotAllowed, current: activeBot(for: chat)?.id)
+  }
+
+  /// Why `query` reached no single allowed bot, with the /bots list so the chat can pick one.
+  func unmatchedReply(_ query: String, for chat: Int64) -> String {
+    let allowed = allowedBots
+    return TelegramBotRouting.unmatchedReply(
+      query, match: TelegramBotRouting.match(query, in: allowed), allowed: allowed,
+      notAllowed: botsNotAllowed, current: activeBot(for: chat)?.id)
+      ?? "No allowed Otto bot matches “\(query)”. Send /bots to see them."
   }
 
   public func setApprovalsFromTelegram(_ enabled: Bool) {
@@ -683,9 +747,17 @@ public final class TelegramConnector: ObservableObject {
     Task { try? await transport?.send("Paired with Otto. Send /bots to select a bot.", to: chat) }
   }
 
+  /// Also drops waiting messages: they belong to the connection that received them.
   private func cancelMessageTasks() {
     for task in messageTasks.values { task.cancel() }
     messageTasks = [:]
+    queuedPrompts = [:]
+    queuePumps = [:]
+  }
+
+  /// What is waiting for a bot, oldest first.
+  func queuedTexts(for botID: UUID) -> [String] {
+    (queuedPrompts[botID] ?? []).map(\.text)
   }
 
   /// Runs `work` on its own task so polling continues meanwhile: an Approve tap or the next
@@ -777,38 +849,39 @@ public final class TelegramConnector: ObservableObject {
     switch command {
     case .help:
       try? await client.send(
-        "Otto commands:\n/bots — list the Otto bots you can reach\n/use @handle — talk to that bot in this chat\n/bot @handle message — ask one bot once\nPlain text, voice notes, photos and videos go to this chat's bot. Start a caption with /bot @handle to send media to one bot. The Mac owner decides which bots are allowed. "
+        "Otto commands:\n/bots — list the Otto bots you can reach\n/use name — talk to that bot in this chat (a handle, a name or the start of one)\n/bot @handle message — ask one bot once; @handle message does the same\nPlain text, voice notes, photos and videos go to this chat's bot. Start a caption with /bot @handle or @handle to send media to one bot. The Mac owner decides which bots are allowed. "
           + (approvalsFromTelegram
             ? "Tool approvals arrive here with Approve and Deny buttons."
             : "Tool approvals stay in Otto on the Mac unless the owner allows them here."),
         to: chat)
     case .bots:
-      let allowed = allowedBots
-      guard !allowed.isEmpty else {
-        try? await client.send(noBotsMessage, to: chat)
-        return
-      }
-      let current = activeBot(for: chat)?.id
-      let lines = allowed.map { bot in
-        "\(bot.id == current ? "•" : " ") @\(bot.handle) — \(bot.name)"
-      }
-      try? await client.send("Otto bots you can reach:\n" + lines.joined(separator: "\n"), to: chat)
+      try? await client.send(botsReply(for: chat), to: chat)
     case .use(let handle):
       guard let bot = allowedBot(matching: handle) else {
-        try? await client.send(
-          "No allowed Otto bot matches \(handle). Send /bots to see them.", to: chat)
+        try? await client.send(unmatchedReply(handle, for: chat), to: chat)
         return
       }
       activeBotByChatID[chat] = bot.id
-      try? await client.send("This chat now talks to @\(bot.handle).", to: chat)
+      try? await client.send(TelegramBotRouting.switchedReply(to: bot), to: chat)
     case .send(let handle, let text):
       guard let bot = allowedBot(matching: handle) else {
-        try? await client.send(
-          "No allowed Otto bot matches \(handle). Send /bots to see them.", to: chat)
+        try? await client.send(unmatchedReply(handle, for: chat), to: chat)
         return
       }
       await sendPrompt(text, to: bot, client: client, chat: chat)
     case .message(let prompt):
+      // `@instagram100kcompany do this` is how Telegram users address a bot. A mention of
+      // anyone else stays an ordinary message for this chat's bot, and the bare handle alone
+      // switches to it.
+      if let mention = mentionedBot(in: prompt) {
+        if mention.text.isEmpty {
+          activeBotByChatID[chat] = mention.bot.id
+          try? await client.send(TelegramBotRouting.switchedReply(to: mention.bot), to: chat)
+        } else {
+          await sendPrompt(mention.text, to: mention.bot, client: client, chat: chat)
+        }
+        return
+      }
       guard let bot = activeBot(for: chat) else {
         try? await client.send(noBotsMessage, to: chat)
         return
@@ -819,6 +892,9 @@ public final class TelegramConnector: ObservableObject {
     }
   }
 
+  /// A message joins its bot's queue. It goes at once when the bot is free, otherwise when the
+  /// bot's current run ends; the chat is told which. Nothing a person says is dropped because
+  /// the bot happened to be busy.
   private func sendPrompt(
     _ prompt: String, to bot: AgentProfile, client: TelegramBotTransport, chat: Int64
   ) async {
@@ -828,24 +904,89 @@ public final class TelegramConnector: ObservableObject {
     }
     // Telegram content is untrusted input. It does not grant permission or approve
     // a pending desktop action; those must still go through Otto's UI.
-    let previousNodeID = services.botRoster().first { $0.profile.id == bot.id }?.nodeID
-    let previousSnapshot = previousNodeID.flatMap { services.fleetStore.snapshot(for: $0) }
-    let previousRunID = previousSnapshot?.runID
-    let previousAssistantIDs = Set(
-      previousSnapshot?.transcript.filter { $0.role == .assistant }.map(\.id) ?? [])
-    do {
-      let opened = try await services.controlSendPrompt(
-        to: bot.id.uuidString, prompt: prompt)
-      try? await client.send("Sent to @\(bot.handle). Working…", to: chat)
-      track { connector in
+    let waiting = queuedPrompts[bot.id] ?? []
+    guard waiting.count < Self.maxQueuedPrompts else {
+      try? await client.send(
+        "@\(bot.handle) already has \(Self.maxQueuedPrompts) messages waiting. Send this one again once it has caught up.",
+        to: chat)
+      return
+    }
+    // Only a run in progress is worth announcing; a queue being worked through is not one.
+    let busy = isBusy(bot)
+    queuedPrompts[bot.id] = waiting + [QueuedPrompt(text: prompt, chat: chat, client: client)]
+    if busy {
+      try? await client.send(
+        "Queued behind the current task. I'll send it when @\(bot.handle) is free.", to: chat)
+    }
+    pumpQueue(for: bot)
+  }
+
+  /// Whether the bot's live session would refuse a prompt now: it is starting, working, or
+  /// waiting on an approval or a question. A stopped or failed session restarts on send.
+  private func isBusy(_ bot: AgentProfile) -> Bool {
+    guard let services,
+      let nodeID = services.botRoster().first(where: { $0.profile.id == bot.id })?.nodeID,
+      let state = services.fleetStore.snapshot(for: nodeID)?.state
+    else { return false }
+    return ![.idle, .done, .interrupted, .stopped, .failed].contains(state)
+  }
+
+  /// Works through a bot's queue on one task: waits until the bot is free, sends the oldest
+  /// message, follows that run so its answer reaches the chat (and so a "Still working" timeout
+  /// does not strand what is waiting), then repeats until nothing is waiting. A message the bot
+  /// cannot take is bounced on its own, quoting the text so the person can send it again, and
+  /// the rest are still tried. Nothing goes to the chat once the task is cancelled: the
+  /// connection it came in on may be gone.
+  private func pumpQueue(for bot: AgentProfile) {
+    guard queuePumps[bot.id] == nil else { return }
+    let pump = UUID()
+    queuePumps[bot.id] = pump
+    track { connector in
+      defer {
+        if connector.queuePumps[bot.id] == pump { connector.queuePumps[bot.id] = nil }
+      }
+      while !Task.isCancelled, let services = connector.services,
+        let next = connector.queuedPrompts[bot.id]?.first
+      {
+        if connector.isBusy(bot) {
+          try? await Task.sleep(for: .seconds(2))
+          continue
+        }
+        let previousNodeID = services.botRoster().first { $0.profile.id == bot.id }?.nodeID
+        let previousSnapshot = previousNodeID.flatMap { services.fleetStore.snapshot(for: $0) }
+        let previousRunID = previousSnapshot?.runID
+        let previousAssistantIDs = Set(
+          previousSnapshot?.transcript.filter { $0.role == .assistant }.map(\.id) ?? [])
+        let opened: BotOpenOutput
+        do {
+          opened = try await services.controlSendPrompt(to: bot.id.uuidString, prompt: next.text)
+        } catch RuntimeError.invalidTransition {
+          // The bot took other work between the check and the send. Wait for that run instead.
+          try? await Task.sleep(for: .seconds(2))
+          continue
+        } catch {
+          guard !Task.isCancelled else { return }
+          connector.queuedPrompts[bot.id]?.removeAll { $0.id == next.id }
+          try? await next.client.send(Self.undeliverable(next.text, bot: bot), to: next.chat)
+          continue
+        }
+        // Off the queue only now; a disconnect meanwhile has already emptied it.
+        connector.queuedPrompts[bot.id]?.removeAll { $0.id == next.id }
+        guard !Task.isCancelled else { return }
+        try? await next.client.send("Sent to @\(bot.handle). Working…", to: next.chat)
+        guard !Task.isCancelled else { return }
         await connector.follow(
           agentID: opened.agentID, bot: bot, previousRunID: previousRunID,
-          previousAssistantIDs: previousAssistantIDs, client: client, chat: chat)
+          previousAssistantIDs: previousAssistantIDs, client: next.client, chat: next.chat)
       }
-    } catch {
-      try? await client.send(
-        "Could not dispatch the message. Open Otto on your Mac to check the bot.", to: chat)
     }
+  }
+
+  /// Quotes enough of the text for the person to find it and send it again.
+  private static func undeliverable(_ text: String, bot: AgentProfile) -> String {
+    let excerpt = text.count > 80 ? String(text.prefix(80)) + "…" : text
+    return
+      "Could not deliver “\(excerpt)” to @\(bot.handle). Open Otto on your Mac to check the bot, then send it again."
   }
 
   /// Relays the opened agent's answer, never another bot's. While it waits for a tool approval,
@@ -1002,8 +1143,7 @@ public final class TelegramConnector: ObservableObject {
         transcript = try await transcribeRecording(file)
       } catch {
         guard !Task.isCancelled else { return }
-        let detail = (error as? LocalizedError)?.errorDescription ?? "It could not be read."
-        try? await client.send("Couldn't transcribe that voice note. \(detail)", to: chat)
+        try? await client.send(Self.voiceNoteFailureReply(for: error), to: chat)
         return
       }
       guard !Task.isCancelled else { return }
@@ -1012,6 +1152,19 @@ public final class TelegramConnector: ObservableObject {
         caption.isEmpty ? transcript : "\(caption)\n\n\(transcript)", to: bot, client: client,
         chat: chat)
     }
+  }
+
+  /// One short sentence for a voice note that could not be transcribed. The engine's reason is
+  /// kept to a single line of at most 200 characters; the full detail is in the system log.
+  nonisolated static func voiceNoteFailureReply(for error: Error) -> String {
+    let plain = "Couldn't transcribe that voice note. Send text instead."
+    var reason = ((error as? LocalizedError)?.errorDescription ?? "")
+      .split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+      .filter { !$0.isEmpty }.joined(separator: " ")
+    while reason.hasSuffix(".") { reason.removeLast() }
+    guard !reason.isEmpty else { return plain }
+    if reason.count > 200 { reason = String(reason.prefix(199)) + "…" }
+    return "Couldn't transcribe that voice note (\(reason)). Send text instead."
   }
 
   /// A photo or video from the paired person goes to this chat's bot, or to the bot a
@@ -1056,16 +1209,18 @@ public final class TelegramConnector: ObservableObject {
   ) {
     var bot = activeBot(for: chat)
     let route = TelegramMedia.route(caption: caption, botUsername: username)
-    let text = route.text
+    var text = route.text
     if let handle = route.botHandle {
       guard let named = allowedBot(matching: handle) else {
-        Task {
-          try? await client.send(
-            "No allowed Otto bot matches \(handle). Send /bots to see them.", to: chat)
-        }
+        let reply = unmatchedReply(handle, for: chat)
+        Task { try? await client.send(reply, to: chat) }
         return
       }
       bot = named
+    } else if let mention = mentionedBot(in: text) {
+      // `@instagram100kcompany compare these` on a photo, like `/bot @handle` would.
+      bot = mention.bot
+      text = mention.text
     }
     guard let bot, let services else {
       Task { try? await client.send(self.noBotsMessage, to: chat) }

@@ -9,6 +9,10 @@ import OttoModels
   import OttoSecurity
 #endif
 
+#if canImport(OSLog)
+  import OSLog
+#endif
+
 /// Providers without a separate instruction channel receive the memory bootstrap embedded ahead
 /// of the first task prompt. Resumed sessions already carried it on their first turn, so
 /// continuations stay lean.
@@ -643,18 +647,46 @@ public struct OpenAIDirectAdapter: AgentAdapter {
     #endif
   }
 
-  public func detectInstallation() async -> InstallationStatus {
-    let bundled = Bundle.main.executableURL?.deletingLastPathComponent()
+  /// Where the bundled runtime is expected: next to Otto's own executable.
+  public static var bundledRuntimePath: String? {
+    Bundle.main.executableURL?.deletingLastPathComponent()
       .appending(path: "otto-openai-agent").path
+  }
+
+  public func detectInstallation() async -> InstallationStatus {
+    let bundled = Self.bundledRuntimePath
     let candidates =
       executablePath.map { [$0] }
       ?? ExecutableLocator.candidates(
         "otto-openai-agent", preferredPaths: bundled.map { [$0] } ?? [])
-    guard let installation = await ExecutableLocator.firstWorking(candidates: candidates) else {
-      return .missing(
-        remediation: "Reinstall Otto so the bundled OpenAI API runtime is available.")
+    if let installation = await ExecutableLocator.firstWorking(candidates: candidates) {
+      return .installed(path: installation.path, version: installation.version)
     }
-    return .installed(path: installation.path, version: installation.version)
+    // The pseudo-terminal probe can fail for reasons that have nothing to do with the runtime,
+    // such as no free pseudo-terminal while many sessions are open. Ask once more over plain
+    // pipes before reporting Otto Harness as unavailable.
+    for path in candidates {
+      if let version = await ExecutableLocator.captureOutput(
+        executable: path, arguments: ["--version"], timeout: .seconds(10))
+      {
+        return .installed(path: path, version: version)
+      }
+    }
+    return .missing(
+      remediation: Self.missingRuntimeRemediation(probed: candidates, expectedAt: bundled))
+  }
+
+  /// Names the path that was checked so a person can tell "the helper is gone" from "the helper
+  /// is there but will not start" without opening Console.
+  static func missingRuntimeRemediation(probed: [String], expectedAt: String?) -> String {
+    let keep = "Stored API keys, bots, profiles and sessions are kept."
+    if let path = probed.first {
+      return
+        "The bundled Otto Harness runtime at \(path) did not answer --version. Reinstall Otto so the bundled OpenAI API runtime is available. \(keep)"
+    }
+    let location = expectedAt.map { " (expected at \($0))" } ?? ""
+    return
+      "The bundled Otto Harness runtime is missing\(location). Reinstall Otto so the bundled OpenAI API runtime is available. \(keep)"
   }
 
   public func availableModels() async -> [AgentModel] {
@@ -779,29 +811,42 @@ public struct OpenAIDirectAdapter: AgentAdapter {
       throw RuntimeError.launchFailed("Otto Harness bots do not support scripted workflows")
     }
     var selection = OttoHarnessModelSelection.resolve(request.model)
+    let hasChosenModel = !(request.model ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     // An account's own backend key wins; otherwise fall back to the Mac-wide Models key.
-    var apiKey = request.account?.harnessCredentials[selection.provider.credentialKey]
-    if apiKey == nil { apiKey = try await credentialProvider(selection.provider) }
-    apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
-    // A bot with no model chosen defaults to OpenAI. On a Mac set up only for a local server,
-    // use that server's default model instead of failing for a missing OpenAI key.
-    if (request.model ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      apiKey?.isEmpty != false, let local = LocalModelConfiguration.load(defaults: localDefaults)
-    {
-      selection = OttoHarnessModelSelection(provider: .local, modelID: local.modelID)
-      apiKey = try await credentialProvider(.local)?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
+    var apiKey = try await storedKey(for: selection.provider, account: request.account)
+    // A bot with no model chosen defaults to OpenAI. Without an OpenAI key the order is: a
+    // configured local server (a Mac set up for one must never start billing a hosted vendor
+    // because some key was saved months ago), then the first other hosted vendor with a stored
+    // key, so a Mac with only an OpenRouter key still launches.
+    if !hasChosenModel, apiKey == nil {
+      if let local = LocalModelConfiguration.load(defaults: localDefaults) {
+        selection = OttoHarnessModelSelection(provider: .local, modelID: local.modelID)
+        apiKey = try await credentialProvider(.local)?
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+      } else if let keyed = try await firstKeyedProvider(
+        account: request.account, excluding: selection.provider)
+      {
+        selection = OttoHarnessModelSelection(
+          provider: keyed.provider,
+          modelID: OttoHarnessModelSelection.defaultModel(for: keyed.provider))
+        apiKey = keyed.key
+      }
+      Self.logResolvedFallback(selection)
     }
     guard selection.provider == .local || (apiKey?.isEmpty == false) else {
       throw RuntimeError.launchFailed(
-        "\(selection.provider.displayName) API key is missing. Add it in Otto Settings → Models, then retry."
-      )
+        hasChosenModel
+          ? "\(selection.provider.displayName) API key is missing. Add it in Otto Settings → Models, then retry."
+          : Self.noProviderConfiguredMessage)
     }
     let localConfiguration: LocalModelConfiguration?
     if selection.provider == .local {
       guard let configured = LocalModelConfiguration.load(defaults: localDefaults) else {
         throw RuntimeError.launchFailed(
-          "Local server URL and model are missing. Configure them in Otto Settings → Models.")
+          hasChosenModel
+            ? "This bot's model points at a local server that is no longer configured. Choose another model for the bot, or add the server again in Otto Settings → Models."
+            : "Local server URL and model are missing. Configure them in Otto Settings → Models.")
       }
       localConfiguration = configured
     } else {
@@ -832,6 +877,48 @@ public struct OpenAIDirectAdapter: AgentAdapter {
       ],
       workingDirectory: request.workspacePath
     )
+  }
+
+  /// What a bot with no model and no key anywhere is told, naming every place a key can live.
+  static let noProviderConfiguredMessage: String = {
+    let vendors = OttoHarnessProvider.keyedFallbackOrder.map(\.displayName)
+    let listed = vendors.dropLast().joined(separator: ", ") + " or " + (vendors.last ?? "")
+    return
+      "No Otto Harness model provider is set up. Add an API key for \(listed) in Otto Settings → Models, or configure a local OpenAI-compatible server there, then retry."
+  }()
+
+  /// The trimmed key for one vendor, or nil when none is stored. An account's own key wins over
+  /// the Mac-wide one.
+  private func storedKey(for provider: OttoHarnessProvider, account: AgentAccountLaunch?)
+    async throws -> String?
+  {
+    let key: String?
+    if let accountKey = account?.harnessCredentials[provider.credentialKey] {
+      key = accountKey
+    } else {
+      key = try await credentialProvider(provider)
+    }
+    let trimmed = key?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
+  private func firstKeyedProvider(
+    account: AgentAccountLaunch?, excluding alreadyChecked: OttoHarnessProvider
+  ) async throws -> (provider: OttoHarnessProvider, key: String)? {
+    for provider in OttoHarnessProvider.keyedFallbackOrder where provider != alreadyChecked {
+      if let key = try await storedKey(for: provider, account: account) { return (provider, key) }
+    }
+    return nil
+  }
+
+  /// Makes the silent choice visible once per launch, so a bill or a "wrong model" report can be
+  /// traced to the fallback rather than to the bot's settings.
+  private static func logResolvedFallback(_ selection: OttoHarnessModelSelection) {
+    #if canImport(OSLog)
+      Logger(subsystem: "io.openotto.desktop", category: "OttoHarness").info(
+        "No model chosen for this bot; using \(selection.provider.displayName, privacy: .public) · \(selection.modelID, privacy: .public)"
+      )
+    #endif
   }
 
   func systemInstructions(for request: AgentLaunchRequest) -> String {

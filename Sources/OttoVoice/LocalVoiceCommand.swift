@@ -12,22 +12,27 @@ public enum LocalVoiceCommandOutcome: Sendable, Equatable {
 public struct LocalCommandUpdate: Sendable, Equatable {
   public var state: DictationState
   public var transcript: String
+  /// Short wording for the Voice row; never a raw runtime or transport error.
   public var detail: String
   public var outcome: LocalVoiceCommandOutcome?
   public var inputDiagnostic: LocalSpeechInputDiagnostic?
+  /// The underlying error for logs when `state` is `.failed`.
+  public var technicalDetail: String?
 
   public init(
     state: DictationState,
     transcript: String = "",
     detail: String = "",
     outcome: LocalVoiceCommandOutcome? = nil,
-    inputDiagnostic: LocalSpeechInputDiagnostic? = nil
+    inputDiagnostic: LocalSpeechInputDiagnostic? = nil,
+    technicalDetail: String? = nil
   ) {
     self.state = state
     self.transcript = transcript
     self.detail = detail
     self.outcome = outcome
     self.inputDiagnostic = inputDiagnostic
+    self.technicalDetail = technicalDetail
   }
 }
 
@@ -556,22 +561,17 @@ public actor LocalVoiceCommandRouter {
     let waitingStates = ["WAITING_PERMISSION", "WAITING_USER"]
     let toolName =
       waitingStates.contains(status["state"]?.stringValue ?? "")
-      ? "agent.send_input"
-      : "agent.send_prompt"
-    let input: JSONValue =
-      if toolName == "agent.send_input" {
-        .object([
-          "agentID": .string(intent.targetID.uuidString),
-          "text": .string(intent.prompt),
-        ])
-      } else {
-        .object([
-          "agentID": .string(intent.targetID.uuidString),
-          "prompt": .string(intent.prompt),
-        ])
-      }
-    _ = try await registry.call(name: toolName, input: input, context: toolContext)
-    return toolName
+      ? VoiceAgentRelay.inputToolName
+      : VoiceAgentRelay.promptToolName
+    let delivery = try await VoiceAgentRelay.send(
+      toolName: toolName,
+      agentID: intent.targetID,
+      text: intent.prompt,
+      lastKnownState: status["state"]?.stringValue,
+      registry: registry,
+      context: toolContext
+    )
+    return delivery.toolName
   }
 
   private func normalizedWords(_ transcript: String) -> [String] {
@@ -630,11 +630,19 @@ public actor LocalCommandSession {
         do {
           for try await text in stream { await self?.record(text) }
         } catch {
-          await self?.failed(error.localizedDescription)
+          await self?.failed(
+            VoiceFailureText.message(for: error),
+            technicalDetail: VoiceFailureText.technicalDetail(for: error)
+          )
         }
       }
     } catch {
-      continuation.yield(LocalCommandUpdate(state: .failed, detail: error.localizedDescription))
+      continuation.yield(
+        LocalCommandUpdate(
+          state: .failed,
+          detail: VoiceFailureText.message(for: error),
+          technicalDetail: VoiceFailureText.technicalDetail(for: error)
+        ))
     }
   }
 
@@ -682,7 +690,8 @@ public actor LocalCommandSession {
         LocalCommandUpdate(
           state: .failed,
           transcript: final,
-          detail: error.localizedDescription
+          detail: VoiceFailureText.message(for: error),
+          technicalDetail: VoiceFailureText.technicalDetail(for: error)
         ))
     }
   }
@@ -734,11 +743,12 @@ public actor LocalCommandSession {
       ))
   }
 
-  private func failed(_ message: String) {
+  private func failed(_ message: String, technicalDetail: String? = nil) {
     if isFinishing { finishError = message }
     guard isListening else { return }
     isListening = false
-    continuation.yield(LocalCommandUpdate(state: .failed, detail: message))
+    continuation.yield(
+      LocalCommandUpdate(state: .failed, detail: message, technicalDetail: technicalDetail))
   }
 }
 

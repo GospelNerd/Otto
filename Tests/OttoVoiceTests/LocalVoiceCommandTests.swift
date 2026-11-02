@@ -266,6 +266,208 @@ struct LocalVoiceCommandTests {
     #expect(await capture.last(tool: "chat.open")?["section"] == "bots")
     #expect(await capture.last(tool: "surface.set")?["surface"] == "chat")
   }
+
+  @Test("Spoken relay continues an agent whose transport had just closed")
+  func relayContinuesExitedAgent() async throws {
+    // A waiting agent whose one-shot CLI closed its PTY a beat before the exit event lands:
+    // send_input fails with a closed transport, then the status settles to DONE and the text
+    // continues the conversation as a prompt instead of surfacing a transport error.
+    let script = ExitingAgentScript(states: ["WAITING_USER", "DONE"])
+    let registry = ToolRegistry()
+    try await registry.register(ExitingAgentStatusProbe(script: script))
+    try await registry.register(ClosedTransportInputProbe(script: script))
+    try await registry.register(ExitingAgentPromptProbe(script: script))
+    let router = LocalVoiceCommandRouter(
+      registry: registry,
+      context: ToolContext(
+        actorID: "relay-voice-test", scopes: Set(ToolScope.allCases), source: .voice)
+    )
+    await router.updateContext(
+      VoiceContext(
+        activeCanvas: VoiceCanvasContext(
+          id: UUID(), name: "Work", workspace: "/tmp/work", layout: .freeform),
+        nodes: [
+          VoiceNodeContext(id: UUID(), name: "Chase", kind: .agent, provider: .codex, status: .idle)
+        ]))
+
+    let outcome = try await router.execute("Tell Chase to review the auth flow.")
+
+    #expect(
+      outcome == .completed(toolName: "agent.send_prompt", confirmation: "Sent verbatim to Chase"))
+    #expect(await script.inputs == ["review the auth flow."])
+    #expect(await script.prompts == ["review the auth flow."])
+  }
+
+  @Test("A failed command shows short wording and keeps the raw error for logs")
+  func failedCommandWording() async throws {
+    let script = ExitingAgentScript(states: ["IDLE"], promptFails: true)
+    let registry = ToolRegistry()
+    try await registry.register(ExitingAgentStatusProbe(script: script))
+    try await registry.register(ClosedTransportInputProbe(script: script))
+    try await registry.register(ExitingAgentPromptProbe(script: script))
+    let router = LocalVoiceCommandRouter(
+      registry: registry,
+      context: ToolContext(
+        actorID: "relay-voice-test", scopes: Set(ToolScope.allCases), source: .voice)
+    )
+    await router.updateContext(
+      VoiceContext(
+        activeCanvas: VoiceCanvasContext(
+          id: UUID(), name: "Work", workspace: "/tmp/work", layout: .freeform),
+        nodes: [
+          VoiceNodeContext(id: UUID(), name: "Chase", kind: .agent, provider: .codex, status: .idle)
+        ]))
+    let session = LocalCommandSession(
+      transcriber: SingleUtteranceTranscriber(utterance: "Tell Chase to review the auth flow."),
+      router: router
+    )
+    let collector = CommandUpdateCollector()
+    let collectTask = Task {
+      for await update in session.updates { await collector.record(update) }
+    }
+
+    await session.start()
+    try await waitUntil {
+      await collector.updates.contains { $0.transcript == "Tell Chase to review the auth flow." }
+    }
+    await session.stopAndExecute()
+    try await waitUntil {
+      await collector.updates.contains { $0.state == .failed }
+    }
+    let failed = try #require(await collector.updates.first { $0.state == .failed })
+    #expect(failed.detail == VoiceFailureText.transportClosedMessage)
+    #expect(!failed.detail.contains("transport is closed"))
+    #expect(failed.technicalDetail?.contains("transportClosed") == true)
+    collectTask.cancel()
+  }
+}
+
+private actor CommandUpdateCollector {
+  private(set) var updates: [LocalCommandUpdate] = []
+  func record(_ update: LocalCommandUpdate) { updates.append(update) }
+}
+
+/// Yields one transcript as soon as capture starts and finishes the stream on stop.
+private final class SingleUtteranceTranscriber: SpeechTranscriber, @unchecked Sendable {
+  let inputDiagnostics = AsyncStream<LocalSpeechInputDiagnostic> { $0.finish() }
+  private let utterance: String
+  private let lock = NSLock()
+  private var continuation: AsyncThrowingStream<String, Error>.Continuation?
+
+  init(utterance: String) { self.utterance = utterance }
+
+  func requestAuthorization() async -> Bool { true }
+
+  func startTranscribing() async throws -> AsyncThrowingStream<String, Error> {
+    AsyncThrowingStream { continuation in
+      lock.withLock { self.continuation = continuation }
+      continuation.yield(utterance)
+    }
+  }
+
+  func stopTranscribing() async {
+    lock.withLock {
+      continuation?.finish()
+      continuation = nil
+    }
+  }
+}
+
+/// Scripts an agent through the agent tools without a real process: `states` feed
+/// agent.get_status in order (the last repeats), send_input always reports a closed transport,
+/// and send_prompt records what reached it.
+private actor ExitingAgentScript {
+  private var states: [String]
+  private let promptFails: Bool
+  private(set) var inputs: [String] = []
+  private(set) var prompts: [String] = []
+
+  init(states: [String], promptFails: Bool = false) {
+    self.states = states
+    self.promptFails = promptFails
+  }
+
+  func nextState() -> String {
+    states.count > 1 ? states.removeFirst() : states[0]
+  }
+
+  func recordInput(_ text: String) { inputs.append(text) }
+
+  func recordPrompt(_ prompt: String) throws {
+    prompts.append(prompt)
+    if promptFails { throw RuntimeError.transportClosed }
+  }
+}
+
+private struct ExitingAgentStatusProbe: OttoTool {
+  struct Input: Codable, Sendable { var agentID: UUID }
+  struct Output: Codable, Sendable { var state: String }
+
+  static let definition = ToolDefinition(
+    name: "agent.get_status",
+    description: "Scripted status probe",
+    inputSchema: .object(["type": .string("object")]),
+    outputSchema: .object(["type": .string("object")]),
+    requiredScopes: [],
+    riskLevel: .read
+  )
+
+  let script: ExitingAgentScript
+
+  func call(_ input: Input, context: ToolContext) async throws -> Output {
+    Output(state: await script.nextState())
+  }
+}
+
+private struct ClosedTransportInputProbe: OttoTool {
+  struct Input: Codable, Sendable {
+    var agentID: UUID
+    var text: String
+  }
+  struct Output: Codable, Sendable { var agentID: UUID }
+
+  static let definition = ToolDefinition(
+    name: "agent.send_input",
+    description: "Input probe whose PTY has closed",
+    inputSchema: .object(["type": .string("object")]),
+    outputSchema: .object(["type": .string("object")]),
+    requiredScopes: [],
+    riskLevel: .read
+  )
+
+  let script: ExitingAgentScript
+
+  func call(_ input: Input, context: ToolContext) async throws -> Output {
+    await script.recordInput(input.text)
+    throw RuntimeError.transportClosed
+  }
+}
+
+private struct ExitingAgentPromptProbe: OttoTool {
+  struct Input: Codable, Sendable {
+    var agentID: UUID
+    var prompt: String
+  }
+  struct Output: Codable, Sendable {
+    var agentID: UUID
+    var state: String
+  }
+
+  static let definition = ToolDefinition(
+    name: "agent.send_prompt",
+    description: "Prompt probe standing in for the resume path",
+    inputSchema: .object(["type": .string("object")]),
+    outputSchema: .object(["type": .string("object")]),
+    requiredScopes: [],
+    riskLevel: .read
+  )
+
+  let script: ExitingAgentScript
+
+  func call(_ input: Input, context: ToolContext) async throws -> Output {
+    try await script.recordPrompt(input.prompt)
+    return Output(agentID: input.agentID, state: "WORKING")
+  }
 }
 
 private actor VoiceBotControlCapture {

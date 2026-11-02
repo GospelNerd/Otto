@@ -19,6 +19,9 @@ enum BrowserChromeStyle {
 struct OttoBrowserTabStrip: View {
   @Environment(\.ottoPalette) private var palette
   @FocusState private var addressFocused: Bool
+  /// True while the open tabs are wider than the room the strip has for them, measured from
+  /// the scroll view itself so the "all tabs" control appears exactly when tabs are hidden.
+  @State private var tabsOverflow = false
   @Binding var address: String
   let addressFocusRequest: Int
   let session: BrowserSession
@@ -84,37 +87,60 @@ struct OttoBrowserTabStrip: View {
         Rectangle().fill(palette.paper.opacity(0.14)).frame(width: 1, height: 18)
       }
 
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 5) {
-          ForEach(session.tabs) { tab in
-            Group {
-              if tab.id == session.activeTabID {
-                activeTab(tab)
-              } else {
-                StripTab(tab: tab, select: { selectTab(tab.id) }, close: { closeTab(tab.id) })
+      ScrollViewReader { proxy in
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 5) {
+            ForEach(session.tabs) { tab in
+              Group {
+                if tab.id == session.activeTabID {
+                  activeTab(tab)
+                } else {
+                  StripTab(tab: tab, select: { selectTab(tab.id) }, close: { closeTab(tab.id) })
+                }
+              }
+              .id(tab.id)
+              .contextMenu {
+                Button("Pin Site") { pin(tab) }
+                  .disabled(
+                    !tab.url.hasPrefix("http")
+                      || pinned.contains { Self.sameSite($0.url, tab.url) })
+                Divider()
+                Button("Close Tab") { closeTab(tab.id) }
               }
             }
-            .contextMenu {
-              Button("Pin Site") { pin(tab) }
-                .disabled(
-                  !tab.url.hasPrefix("http")
-                    || pinned.contains { Self.sameSite($0.url, tab.url) })
-              Divider()
-              Button("Close Tab") { closeTab(tab.id) }
+            Button(action: newTab) {
+              Image(systemName: "plus")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 28, height: 28)
+                .background(palette.raised.opacity(0.72), in: RoundedRectangle(cornerRadius: 7))
             }
+            .buttonStyle(.ottoChrome)
+            .foregroundStyle(palette.muted)
+            .help("New tab (⌘T)")
+            .accessibilityLabel("New tab")
           }
-          Button(action: newTab) {
-            Image(systemName: "plus")
-              .font(.system(size: 11, weight: .semibold))
-              .frame(width: 28, height: 28)
-              .background(palette.raised.opacity(0.72), in: RoundedRectangle(cornerRadius: 7))
-          }
-          .buttonStyle(.ottoChrome)
-          .foregroundStyle(palette.muted)
-          .help("New tab (⌘T)")
-          .accessibilityLabel("New tab")
+          .padding(.vertical, 2)
         }
-        .padding(.vertical, 2)
+        // The edge fade says "more this way"; the flag below adds the all-tabs menu.
+        .ottoScrollChrome(axis: .horizontal, fade: 18, showsThumb: false)
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+          Self.tabsOverflow(
+            contentWidth: geometry.contentSize.width,
+            containerWidth: geometry.containerSize.width)
+        } action: { _, overflows in
+          tabsOverflow = overflows
+        }
+        // A tab chosen anywhere (a click here, ⌘T, ⌃Tab, an agent, a link) is brought into
+        // view; `task(id:)` also runs once on appearance, after the first layout.
+        .task(id: session.activeTabID) {
+          withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(session.activeTabID) }
+        }
+      }
+
+      if tabsOverflow {
+        BrowserAllTabsMenu(
+          tabs: session.tabs, activeTabID: session.activeTabID, selectTab: selectTab,
+          closeTab: closeTab)
       }
 
       Spacer(minLength: 4)
@@ -173,6 +199,12 @@ struct OttoBrowserTabStrip: View {
     }
   }
 
+  /// Whether the tab row is wider than its viewport. Half a point of slack keeps the control
+  /// from flickering on a strip that exactly fits.
+  static func tabsOverflow(contentWidth: CGFloat, containerWidth: CGFloat) -> Bool {
+    containerWidth > 0 && contentWidth > containerWidth + 0.5
+  }
+
   static func sameSite(_ left: String, _ right: String) -> Bool {
     func host(_ url: String) -> String? {
       URL(string: url)?.host?.lowercased().replacingOccurrences(of: "www.", with: "")
@@ -216,6 +248,58 @@ struct OttoBrowserTabStrip: View {
         .strokeBorder(palette.paper.opacity(addressFocused ? 0.18 : 0.1))
     )
     .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
+  }
+}
+
+/// One row of the all-tabs menu: what the item says and whether it carries the checkmark.
+struct BrowserAllTabsItem: Equatable, Identifiable {
+  let id: UUID
+  let title: String
+  let isActive: Bool
+
+  /// Every open tab in strip order, untitled ones named as the strip names them.
+  static func items(tabs: [BrowserTab], activeTabID: UUID) -> [BrowserAllTabsItem] {
+    tabs.map {
+      BrowserAllTabsItem(
+        id: $0.id, title: $0.title.isEmpty ? "New Tab" : $0.title, isActive: $0.id == activeTabID)
+    }
+  }
+}
+
+/// The compact control at the end of an overflowing strip: a chevron that lists every open
+/// tab, ticks the active one, and switches to the tab you choose.
+struct BrowserAllTabsMenu: View {
+  @Environment(\.ottoPalette) private var palette
+  let tabs: [BrowserTab]
+  let activeTabID: UUID
+  let selectTab: (UUID) -> Void
+  let closeTab: (UUID) -> Void
+
+  var body: some View {
+    let items = BrowserAllTabsItem.items(tabs: tabs, activeTabID: activeTabID)
+    Menu {
+      ForEach(items) { item in
+        Toggle(
+          item.title,
+          isOn: Binding(get: { item.isActive }, set: { _ in selectTab(item.id) }))
+      }
+      if let active = items.first(where: \.isActive) {
+        Divider()
+        Button("Close \u{201C}\(active.title)\u{201D}") { closeTab(active.id) }
+      }
+    } label: {
+      // Styled like the Passwords key beside it: the popup rasterises its label as a template
+      // image, so `tint` carries the colour and a SwiftUI background would not render.
+      Image(systemName: "chevron.down").font(.system(size: 12, weight: .medium))
+        .frame(width: 24, height: 28)
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .foregroundStyle(palette.muted)
+    .tint(palette.muted)
+    .fixedSize()
+    .help("All tabs (\(tabs.count))")
+    .accessibilityLabel("All tabs")
   }
 }
 

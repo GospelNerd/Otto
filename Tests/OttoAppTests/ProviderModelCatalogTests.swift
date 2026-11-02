@@ -14,8 +14,44 @@ struct ProviderModelCatalogTests {
     #expect(SessionLaunchProviderCatalog.providers.contains(.codex))
     #expect(SessionLaunchProviderCatalog.providers.contains(.openAI))
     #expect(!SessionLaunchProviderCatalog.providers.contains(.shell))
-    #expect(SessionLaunchProviderCatalog.title(for: .openAI) == "Otto Harness · API & local models")
+    #expect(SessionLaunchProviderCatalog.title(for: .openAI) == "Otto")
     #expect(SessionLaunchProviderCatalog.title(for: .codex) == "Codex")
+  }
+
+  @Test("Otto's harness is ready to start once any vendor key, account key or local server exists")
+  @MainActor
+  func harnessLaunchReadiness() async throws {
+    let suite = "otto.tests.harness-readiness.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let root = FileManager.default.temporaryDirectory.appending(path: "readiness-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let secrets = InMemorySecretStore()
+    let accounts = ProviderAccountStore(
+      rootDirectory: root, userHome: root.appending(path: "home"), secrets: secrets)
+    func ready() async -> Bool {
+      await OttoHarnessLaunchReadiness.isReady(
+        secrets: secrets, accounts: accounts, localDefaults: defaults)
+    }
+
+    #expect(await !ready())
+
+    try await secrets.set("sk-mac", for: OttoHarnessProvider.anthropic.credentialKey)
+    #expect(await ready())
+    try await secrets.delete(OttoHarnessProvider.anthropic.credentialKey)
+    #expect(await !ready())
+
+    let work = try accounts.create(name: "Work")
+    try await accounts.setHarnessKey(
+      "sk-account", accountID: work.id, credentialKey: OttoHarnessProvider.groq.credentialKey)
+    #expect(await ready())
+    try await accounts.setHarnessKey(
+      nil, accountID: work.id, credentialKey: OttoHarnessProvider.groq.credentialKey)
+    #expect(await !ready())
+
+    try LocalModelConfiguration(baseURL: "http://127.0.0.1:11434/v1", modelID: "qwen3:8b")
+      .save(defaults: defaults)
+    #expect(await ready())
   }
 
   @Test("Every account-aware provider is loaded through the shared catalog")

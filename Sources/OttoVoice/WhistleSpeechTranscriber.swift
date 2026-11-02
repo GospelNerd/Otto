@@ -62,10 +62,14 @@ public enum WhistleRuntimeError: Error, LocalizedError, Equatable {
 
   public var errorDescription: String? {
     switch self {
-    case .invalidInstallation(let detail): detail
-    case .conversion(let detail): "Could not prepare the recording for Whistle: \(detail)"
-    case .failed(let status, let detail): "Whistle exited with status \(status): \(detail)"
-    case .missingResult: "Whistle returned no transcript"
+    case .invalidInstallation(let detail): return detail
+    case .conversion(let detail): return "Could not prepare the recording for Whistle: \(detail)"
+    case .failed(let status, let detail):
+      let reason = TranscriptionDiagnostics.summary(of: detail)
+      return reason.isEmpty
+        ? "Whistle exited with status \(status)"
+        : "Whistle exited with status \(status): \(reason)"
+    case .missingResult: return "Whistle returned no transcript"
     }
   }
 }
@@ -91,8 +95,10 @@ public struct WhistleOfflineRunner: Sendable {
       ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", audioURL.path, clip.path],
       timeout: LocalProcess.conversionTimeout)
     guard converted.status == 0 else {
-      throw WhistleRuntimeError.conversion(converted.errorText)
+      throw WhistleRuntimeError.conversion(
+        TranscriptionDiagnostics.summary(of: converted.errorText))
     }
+    try PCMWaveFile.normalize(at: clip)
     // Anything that can write to Application Support could swap the engine after install, so
     // its bytes are checked against the pin right before every run.
     if let error = configuration.engineIntegrityError() {
@@ -103,6 +109,8 @@ public struct WhistleOfflineRunner: Sendable {
       ["--model", configuration.modelURL.path, "--audio", clip.path],
       timeout: LocalProcess.transcriptionTimeout(for: [clip]))
     guard result.status == 0 else {
+      TranscriptionDiagnostics.logFailure(
+        engine: "Whistle", status: result.status, errorText: result.errorText)
       throw WhistleRuntimeError.failed(result.status, result.errorText)
     }
     return try Self.parse(String(decoding: result.output, as: UTF8.self))

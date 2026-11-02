@@ -16,21 +16,40 @@ struct ModelProviderSettingsView: View {
   @State private var isFetchingLocalModels = false
   @State private var message: String?
   @State private var isError = false
+  /// Whether the bundled otto-openai-agent answers, so a person can tell a missing runtime from a
+  /// missing key without reading logs.
+  @State private var runtimeStatus: InstallationStatus?
+  @State private var isCheckingRuntime = false
   private let secrets: any SecretStore
+  /// Called after a vendor key is stored, so a sheet waiting on a key can carry on.
+  private let onKeySaved: (() -> Void)?
   private let onLocalSaved: (() -> Void)?
 
   init(
     secrets: any SecretStore = makeDefaultSecretStore(),
     initialProvider: OttoHarnessProvider = .openAI,
+    onKeySaved: (() -> Void)? = nil,
     onLocalSaved: (() -> Void)? = nil
   ) {
     self.secrets = secrets
     self._provider = State(initialValue: initialProvider)
+    self.onKeySaved = onKeySaved
     self.onLocalSaved = onLocalSaved
   }
 
   var body: some View {
     Form {
+      Section("Otto Harness runtime") {
+        HStack(alignment: .top) {
+          runtimeStatusLabel
+          Spacer()
+          Button(isCheckingRuntime ? "Checking…" : "Check again") {
+            Task { await checkRuntime() }
+          }
+          .disabled(isCheckingRuntime)
+        }
+      }
+
       Section("Otto Harness model providers") {
         Picker("Configure provider", selection: $provider) {
           ForEach(OttoHarnessProvider.allCases) { candidate in
@@ -140,6 +159,36 @@ struct ModelProviderSettingsView: View {
     }
     .formStyle(.grouped)
     .task { await refresh() }
+    .task { await checkRuntime() }
+  }
+
+  @ViewBuilder
+  private var runtimeStatusLabel: some View {
+    switch runtimeStatus {
+    case .installed(let path, let version):
+      VStack(alignment: .leading, spacing: 3) {
+        Label("Runtime ready · \(version)", systemImage: "checkmark.circle.fill")
+          .foregroundStyle(.green)
+        Text(path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+      }
+      .accessibilityIdentifier("harness-runtime-ready")
+    case .missing(let remediation):
+      VStack(alignment: .leading, spacing: 3) {
+        Label("Runtime unavailable", systemImage: "exclamationmark.triangle.fill")
+          .foregroundStyle(.red)
+        Text(remediation).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+      }
+      .accessibilityIdentifier("harness-runtime-missing")
+    case nil:
+      Label("Checking the bundled runtime…", systemImage: "hourglass")
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private func checkRuntime() async {
+    isCheckingRuntime = true
+    defer { isCheckingRuntime = false }
+    runtimeStatus = await OpenAIDirectAdapter().detectInstallation()
   }
 
   private var localModelChoices: some View {
@@ -240,6 +289,7 @@ struct ModelProviderSettingsView: View {
       message = "\(provider.displayName) key saved."
       isError = false
       await refresh(clearMessage: false)
+      onKeySaved?()
     } catch {
       message = error.localizedDescription
       isError = true

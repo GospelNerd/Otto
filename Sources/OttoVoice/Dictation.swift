@@ -82,22 +82,27 @@ public enum DictationState: String, Sendable, Equatable {
 public struct DictationUpdate: Sendable, Equatable {
   public var state: DictationState
   public var transcript: String
+  /// Short wording for the Voice row; never a raw runtime or transport error.
   public var detail: String
   public var inputDiagnostic: LocalSpeechInputDiagnostic?
   public var delivered: Bool
+  /// The underlying error for logs when `state` is `.failed`.
+  public var technicalDetail: String?
 
   public init(
     state: DictationState,
     transcript: String = "",
     detail: String = "",
     inputDiagnostic: LocalSpeechInputDiagnostic? = nil,
-    delivered: Bool = false
+    delivered: Bool = false,
+    technicalDetail: String? = nil
   ) {
     self.state = state
     self.transcript = transcript
     self.detail = detail
     self.inputDiagnostic = inputDiagnostic
     self.delivered = delivered
+    self.technicalDetail = technicalDetail
   }
 }
 
@@ -134,14 +139,15 @@ public struct DictationRouter: Sendable {
       )
       return "Prompted \(String(verbatim.prefix(60)))"
     }
-    _ = try await registry.call(
-      name: "agent.send_input",
-      input: .object([
-        "agentID": .string(nodeID.uuidString),
-        "text": .string(verbatim),
-      ]),
+    let delivery = try await VoiceAgentRelay.send(
+      toolName: VoiceAgentRelay.inputToolName,
+      agentID: nodeID,
+      text: verbatim,
+      lastKnownState: state,
+      registry: registry,
       context: context
     )
+    if delivery.continuedAfterExit { return "Prompted \(String(verbatim.prefix(60)))" }
     return "Sent input \(String(verbatim.prefix(60)))"
   }
 }
@@ -199,12 +205,19 @@ public actor DictationSession {
             await self?.record(text)
           }
         } catch {
-          await self?.captureFailed(error.localizedDescription)
+          await self?.captureFailed(
+            VoiceFailureText.message(for: error),
+            technicalDetail: VoiceFailureText.technicalDetail(for: error)
+          )
         }
       }
     } catch {
       updateContinuation.yield(
-        DictationUpdate(state: .failed, detail: error.localizedDescription))
+        DictationUpdate(
+          state: .failed,
+          detail: VoiceFailureText.message(for: error),
+          technicalDetail: VoiceFailureText.technicalDetail(for: error)
+        ))
     }
   }
 
@@ -247,7 +260,12 @@ public actor DictationSession {
         DictationUpdate(state: .idle, transcript: final, detail: receipt, delivered: true))
     } catch {
       updateContinuation.yield(
-        DictationUpdate(state: .failed, transcript: final, detail: error.localizedDescription))
+        DictationUpdate(
+          state: .failed,
+          transcript: final,
+          detail: VoiceFailureText.message(for: error),
+          technicalDetail: VoiceFailureText.technicalDetail(for: error)
+        ))
     }
   }
 
@@ -295,11 +313,16 @@ public actor DictationSession {
       ))
   }
 
-  private func captureFailed(_ message: String) {
+  private func captureFailed(_ message: String, technicalDetail: String? = nil) {
     if isFinishing { finishError = message }
     guard isListening else { return }
     isListening = false
     updateContinuation.yield(
-      DictationUpdate(state: .failed, transcript: transcript, detail: message))
+      DictationUpdate(
+        state: .failed,
+        transcript: transcript,
+        detail: message,
+        technicalDetail: technicalDetail
+      ))
   }
 }

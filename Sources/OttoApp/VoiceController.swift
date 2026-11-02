@@ -7,6 +7,7 @@ import OttoSecurity
 import OttoServices
 import OttoTools
 import OttoVoice
+import os
 
 enum VoiceEngine: String, CaseIterable, Hashable, Identifiable {
   case xai
@@ -170,6 +171,7 @@ enum RelayQualificationRecordingState: Equatable {
 
 @MainActor
 final class VoiceController: ObservableObject {
+  private static let logger = Logger(subsystem: "io.openotto.desktop", category: "Voice")
   @Published private(set) var snapshot = VoiceSessionSnapshot(state: .sleeping)
   @Published private(set) var hasAPIKey = false
   @Published private(set) var configuredVoiceEngines: Set<VoiceEngine> = []
@@ -814,6 +816,7 @@ final class VoiceController: ObservableObject {
     guard operatingMode == .pushToTalk || operatingMode == .outputOnly else { return }
     guard !pushToTalkHeld else { return }
     pushToTalkHeld = true
+    lastLocalResultMode = nil
     await connectCloudVoice(microphoneEnabled: false)
     guard pushToTalkHeld else { return }
     await setCloudMicrophoneEnabled(true)
@@ -902,6 +905,9 @@ final class VoiceController: ObservableObject {
     await stopWakeWord(nextStatus: .paused)
     await stopLocalCapture()
     if isCloudVoiceActive { await session.sleep() }
+    // A new conversation supersedes the last local command or dictation result, including a
+    // failure; otherwise the Voice row keeps showing it once this session ends.
+    lastLocalResultMode = nil
     await connectCloudVoice(microphoneEnabled: true)
   }
 
@@ -1006,6 +1012,9 @@ final class VoiceController: ObservableObject {
       for await update in created.updates {
         guard !Task.isCancelled else { break }
         self?.dictationUpdate = update
+        if update.state == .failed, let technicalDetail = update.technicalDetail {
+          Self.logger.error("Dictation failed: \(technicalDetail, privacy: .public)")
+        }
         if update.delivered {
           try? await self?.dictationDraftStore.clear()
           self?.dictationDraft = nil
@@ -1047,6 +1056,9 @@ final class VoiceController: ObservableObject {
       for await update in created.updates {
         guard !Task.isCancelled else { break }
         self?.commandUpdate = update
+        if update.state == .failed, let technicalDetail = update.technicalDetail {
+          Self.logger.error("Local command failed: \(technicalDetail, privacy: .public)")
+        }
         if let outcome = update.outcome { self?.handOffToChat(outcome, heard: update.transcript) }
         if case .completed? = update.outcome {
           // Ticks "Say a command" on Home's Getting started card.

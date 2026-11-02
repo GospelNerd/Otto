@@ -476,3 +476,18 @@ public enum RuntimeError: Error, LocalizedError, Sendable, Equatable {
     }
   }
 }
+
+extension RuntimeError: OttoFailureClassifying {
+  public var failureKind: OttoFailureKind? {
+    switch self {
+    case .transportClosed: .agentTransportClosed
+    case .agentNotFound: .agentNotFound
+    // A control refused because the process has already ended is "stopped", not "busy".
+    case .invalidTransition(let from, _) where from == .stopped || from == .failed:
+      .agentStopped
+    case .invalidTransition: .agentBusy
+    case .launchFailed: .agentLaunchFailed
+    case .staleRun, .noPendingPermission, .permissionExpired: nil
+    }
+  }
+}

@@ -15,6 +15,13 @@ struct ChatCanvasSelection: Equatable {
   let nodeID: UUID?
 }
 
+/// A New session choice of Otto's harness, held while the person adds an API key.
+struct HarnessKeySetupRequest: Identifiable {
+  let id = UUID()
+  let projectID: UUID?
+  let folder: String?
+}
+
 enum ChatFocusedAgentTarget: Equatable {
   case session(canvasID: UUID, nodeID: UUID)
   case bot(profileID: UUID, nodeID: UUID)
@@ -74,7 +81,9 @@ struct ChatWorkspaceView: View {
   @Binding var navigation: ChatSurfaceNavigationState
   let launchAgent: () -> Void
   /// Starts a session for a provider, in the given folder when it is not nil.
-  var quickLaunchAgent: (AgentProvider, String?) async -> UUID? = { _, _ in nil }
+  var quickLaunchAgent: (AgentProvider, String?) async throws -> UUID = { _, _ in
+    throw RuntimeError.launchFailed("This window cannot start sessions")
+  }
 
   @State private var showingProjectContext = false
   @State private var showingCreateProject = false
@@ -144,7 +153,12 @@ struct ChatWorkspaceView: View {
   @State private var sideChatError: String?
   @State private var showingHire = false
   @State private var showingTeam = false
-  @State private var showingSessionCreator = false
+  /// Not private so snapshot tests can open the New session menu.
+  @State var showingSessionCreator = false
+  /// Why the last one-off session failed to start, shown as an alert.
+  @State private var sessionLaunchError: String?
+  /// A New session request for Otto's harness that is waiting on an API key or local server.
+  @State private var harnessKeySetup: HarnessKeySetupRequest?
   @State private var hoveredSessionID: UUID?
   @State private var renamingSessionID: UUID?
   @State private var sessionNameDraft = ""
@@ -495,6 +509,26 @@ struct ChatWorkspaceView: View {
         }
       }
       .environment(\.ottoPalette, palette)
+    }
+    .sheet(item: $harnessKeySetup) { request in
+      OttoHarnessKeySetupSheet(
+        services: services,
+        cancel: { harnessKeySetup = nil },
+        ready: {
+          harnessKeySetup = nil
+          Task { await launchSession(.openAI, folder: request.folder, projectID: request.projectID) }
+        }
+      )
+      .environment(\.ottoPalette, palette)
+    }
+    .alert(
+      "Couldn't start the session",
+      isPresented: Binding(
+        get: { sessionLaunchError != nil }, set: { if !$0 { sessionLaunchError = nil } })
+    ) {
+      Button("OK", role: .cancel) { sessionLaunchError = nil }
+    } message: {
+      Text(sessionLaunchError ?? "")
     }
     .sheet(item: $editingBot) { profile in
       HireBotSheet(services: services, editing: profile) { _ in }
@@ -949,6 +983,19 @@ struct ChatWorkspaceView: View {
       motion.presence(.fast, isPresented: showingSessionCreator), value: showingSessionCreator)
   }
 
+  /// Starts a one-off session and opens it, or says why it could not start.
+  private func launchSession(_ provider: AgentProvider, folder: String?, projectID: UUID?) async {
+    let agentID: UUID
+    do { agentID = try await quickLaunchAgent(provider, folder) } catch {
+      sessionLaunchError = error.localizedDescription
+      return
+    }
+    do { try services.selectProject(channelID: agentID, projectID: projectID) } catch {
+      projectContextError = error.localizedDescription
+    }
+    selectNewSession(agentID)
+  }
+
   private var sessionCreatorPopover: some View {
     VStack(alignment: .leading, spacing: 0) {
       Text("NEW SESSION")
@@ -1001,11 +1048,15 @@ struct ChatWorkspaceView: View {
               let folder = services.conversationProjects.workingFolder(
                 projectID: projectID, provider: provider)
               Task {
-                guard let agentID = await quickLaunchAgent(provider, folder) else { return }
-                do { try services.selectProject(channelID: agentID, projectID: projectID) } catch {
-                  projectContextError = error.localizedDescription
+                // Otto's harness has no login of its own: with no vendor key and no local
+                // server the launch can only fail, so ask for one first and start afterwards.
+                if provider == .openAI,
+                  await !OttoHarnessLaunchReadiness.isReady(accounts: services.providerAccounts)
+                {
+                  harnessKeySetup = HarnessKeySetupRequest(projectID: projectID, folder: folder)
+                  return
                 }
-                selectNewSession(agentID)
+                await launchSession(provider, folder: folder, projectID: projectID)
               }
             } label: {
               HStack(spacing: 10) {
@@ -1412,15 +1463,14 @@ struct ChatWorkspaceView: View {
     } else {
       switch target {
       case .provider(let provider):
-        guard let launched = await quickLaunchAgent(provider, nil) else {
+        do { id = try await quickLaunchAgent(provider, nil) } catch {
           throw NSError(
             domain: "Otto", code: 1,
             userInfo: [
               NSLocalizedDescriptionKey:
-                "Couldn’t start \(provider.rawValue). Check its connection in Settings."
+                "Couldn’t start \(provider.rawValue). \(error.localizedDescription)"
             ])
         }
-        id = launched
       case .bot(let profileID):
         guard let entry = services.botRoster().first(where: { $0.profile.id == profileID }) else {
           throw NSError(
@@ -4924,8 +4974,22 @@ struct HireBotSheet: View {
         }
         .font(.ottoMono(8))
         .foregroundStyle(palette.muted)
+      } else if let remediation = providerRemediation(provider) {
+        // Say why a harness is greyed out, so "not installed" is never a dead end.
+        Text(remediation)
+          .font(.ottoMono(8))
+          .foregroundStyle(palette.muted)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("bot-harness-remediation")
       }
     }
+  }
+
+  /// The adapter's own remediation for a harness that cannot start, or nil when it is ready.
+  private func providerRemediation(_ provider: AgentProvider) -> String? {
+    guard let info = availability.first(where: { $0.provider == provider }), !info.installed
+    else { return nil }
+    return info.remediation ?? "Install it, sign in, then come back."
   }
 
   @ViewBuilder

@@ -30,14 +30,35 @@ public enum AudioFileTranscription {
   /// Telegram's Bot API serves files up to 20 MB; nothing larger is read.
   public static let maxBytes = 20_000_000
 
+  /// Runs one engine on the converted clip; nil means the engine is not installed or allowed.
+  typealias EngineRunner =
+    @Sendable (URL, AudioFileTranscriptionEngine) async throws -> String?
+
   /// Gives up after `timeout` overall, on top of each engine's own limit, so one stuck
   /// recording cannot hold its caller forever.
   public static func transcribe(
     _ audioURL: URL, preferring order: [AudioFileTranscriptionEngine],
     timeout: Duration = .seconds(600)
   ) async throws -> String {
+    try await transcribe(audioURL, preferring: order, timeout: timeout, runner: transcribe(_:with:))
+  }
+
+  /// The engines in the order they are tried: the preferred ones first, then every other, so
+  /// Apple's on-device speech is the last resort unless it was asked for first.
+  static func engineOrder(preferring order: [AudioFileTranscriptionEngine])
+    -> [AudioFileTranscriptionEngine]
+  {
+    order + AudioFileTranscriptionEngine.allCases.filter { !order.contains($0) }
+  }
+
+  static func transcribe(
+    _ audioURL: URL, preferring order: [AudioFileTranscriptionEngine], timeout: Duration,
+    runner: @escaping EngineRunner
+  ) async throws -> String {
     try await withThrowingTaskGroup(of: String.self) { group in
-      group.addTask { try await transcribeWithFirstReadyEngine(audioURL, preferring: order) }
+      group.addTask {
+        try await transcribeWithFirstReadyEngine(audioURL, preferring: order, runner: runner)
+      }
       group.addTask {
         try await Task.sleep(for: timeout)
         throw AudioFileTranscriptionError.timedOut
@@ -49,7 +70,7 @@ public enum AudioFileTranscription {
   }
 
   private static func transcribeWithFirstReadyEngine(
-    _ audioURL: URL, preferring order: [AudioFileTranscriptionEngine]
+    _ audioURL: URL, preferring order: [AudioFileTranscriptionEngine], runner: EngineRunner
   ) async throws -> String {
     let directory = FileManager.default.temporaryDirectory
       .appending(path: "otto-audio-\(UUID().uuidString)")
@@ -59,17 +80,21 @@ public enum AudioFileTranscription {
     let clip = directory.appending(path: "clip.wav")
     try await convert(audioURL, to: clip)
 
+    // An engine that fails does not stop the next one; the last failure is what the caller sees,
+    // and every failure is logged so the cause is in Console.
     var lastError: Error = AudioFileTranscriptionError.noEngine
-    let engines = order + AudioFileTranscriptionEngine.allCases.filter { !order.contains($0) }
-    for engine in engines {
+    for engine in engineOrder(preferring: order) {
       do {
-        guard let text = try await transcribe(clip, with: engine) else { continue }
+        guard let text = try await runner(clip, engine) else { continue }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }
         lastError = AudioFileTranscriptionError.nothingHeard
       } catch is CancellationError {
         throw CancellationError()
       } catch {
+        TranscriptionDiagnostics.logger.error(
+          "\(engine.rawValue, privacy: .public) could not transcribe the recording: \(String(describing: error), privacy: .public)"
+        )
         lastError = error
       }
     }
@@ -111,7 +136,7 @@ public enum AudioFileTranscription {
     }
   }
 
-  private static func convert(_ source: URL, to destination: URL) async throws {
+  static func convert(_ source: URL, to destination: URL) async throws {
     let size =
       (try? FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber)?
       .intValue ?? 0
@@ -123,8 +148,14 @@ public enum AudioFileTranscription {
       ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", source.path, destination.path],
       timeout: LocalProcess.conversionTimeout)
     guard result.status == 0 else {
-      throw AudioFileTranscriptionError.conversion(String(result.errorText.suffix(300)))
+      TranscriptionDiagnostics.logFailure(
+        engine: "afconvert", status: result.status, errorText: result.errorText)
+      throw AudioFileTranscriptionError.conversion(
+        TranscriptionDiagnostics.summary(of: result.errorText))
     }
+    // afconvert writes WAVE_FORMAT_EXTENSIBLE for sources with a channel layout, such as
+    // Telegram's Ogg Opus, and sherpa-onnx refuses that header.
+    try PCMWaveFile.normalize(at: destination)
   }
 }
 

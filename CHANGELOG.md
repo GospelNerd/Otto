@@ -4,6 +4,17 @@ All notable changes to Otto (called Muse before 0.2.0) are documented here. Each
 published verbatim as the in-app update notes and on the download site, so write for users:
 lead with what they can now do, not how it was implemented.
 
+## Unreleased
+
+### Fixed
+
+- **Telegram messages are no longer lost while a bot is busy.** Send a second message while your bot is still working and Otto replies "Queued behind the current task" and delivers it, in order, when the bot is free. A message the bot genuinely cannot take is bounced with its text so you can send it again (issue #41).
+- **Reach any of your bots from Telegram.** `/bots` now says which saved bots are not yet allowed for Telegram and where to allow them. `/use` and `/bot` accept a bot's name or a unique start of its handle, without the `@`, and a message that starts with `@handle` goes to that bot once. Ordinary messages that merely mention someone are untouched (issue #40).
+- **Telegram voice notes transcribe again on Parakeet.** afconvert writes an extended WAV header that the Parakeet engine refused ("exited with status 255"); Otto now rewrites the clip to plain PCM first. If an engine still fails, the reply is one short line with the real reason instead of a wall of configuration, and the full detail goes to Console (issue #36).
+- **Voice no longer shows "The terminal transport is closed".** When an agent's terminal closes just as you dictate or speak a command, Otto waits for the agent to settle and continues, and the Voice row shows short plain wording such as "That agent had already stopped. Try again." Spoken approvals are never turned into new prompts (issue #46).
+- **Browser shows when you have more tabs than fit.** The tab row fades at its edges, the active tab is scrolled into view, and a chevron after the tabs lists every open tab (issue #38).
+- **Otto Harness works with any stored key.** A bot with no model chosen uses your OpenAI key, then a configured local server, then the first other provider with a stored key (OpenRouter, DeepSeek, Mistral, Groq, Gemini, Moonshot) instead of failing with "OpenAI API key is missing". Settings → Models shows whether the Harness runtime is ready, and the bot and agent sheets say why a harness is unavailable (issue #48).
+
 ## 0.2.13 — 2026-10-30
 
 ### New

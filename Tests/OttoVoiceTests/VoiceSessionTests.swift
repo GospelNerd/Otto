@@ -1067,6 +1067,161 @@ struct VoiceSessionTests {
     await session.sleep()
   }
 
+  @Test("A spoken approval to an agent that had exited is reported, not re-run as a prompt")
+  func spokenApprovalToExitedAgentIsNotReplayed() async throws {
+    // The realtime model answers a permission prompt, but the one-shot CLI already exited.
+    // Respawning the provider to run a whole turn on "yes, go ahead" would cost money and leave
+    // a baffling transcript, so the person gets the short error instead.
+    let script = ExitingAgentScript(states: ["WAITING_PERMISSION", "DONE"])
+    let registry = ToolRegistry()
+    try await registry.register(ExitingAgentStatusProbe(script: script))
+    try await registry.register(ClosedTransportInputProbe(script: script))
+    try await registry.register(ExitingAgentPromptProbe(script: script))
+    let provider = ScriptedVoiceProvider()
+    let session = VoiceSession(
+      registry: registry,
+      context: ToolContext(actorID: "voice", scopes: [])
+    )
+    await session.connect(provider: provider)
+    try await waitUntil { await session.snapshot().state == .listening }
+
+    await provider.emit(
+      .toolCall(
+        id: "spoken-input",
+        name: "agent.send_input",
+        arguments: .object([
+          "agentID": .string(UUID().uuidString),
+          "text": .string("yes, go ahead"),
+        ])
+      ))
+
+    let result = try await firstResult(from: provider.results)
+    #expect(result.isError)
+    #expect(result.result["error"]?.stringValue == VoiceFailureText.transportClosedMessage)
+    #expect(await script.inputs == ["yes, go ahead"])
+    #expect(await script.prompts.isEmpty)
+    try await waitUntil { await session.snapshot().lastError != nil }
+    #expect(await session.snapshot().lastError == VoiceFailureText.transportClosedMessage)
+    let trace = await session.conversationTrace()
+    #expect(!trace.contains { $0.title == "Agent had exited; continued as a prompt" })
+    await session.sleep()
+  }
+
+  @Test("Spoken agent input continues an agent whose exit was recorded")
+  func spokenInputContinuesExitedAgent() async throws {
+    // A real instruction for a waiting agent whose one-shot CLI closed the PTY a beat before
+    // its exit event: send_input reports a closed transport, the status settles to DONE, and
+    // the text continues the conversation as a prompt.
+    let script = ExitingAgentScript(states: ["WAITING_USER", "DONE"])
+    let registry = ToolRegistry()
+    try await registry.register(ExitingAgentStatusProbe(script: script))
+    try await registry.register(ClosedTransportInputProbe(script: script))
+    try await registry.register(ExitingAgentPromptProbe(script: script))
+    let provider = ScriptedVoiceProvider()
+    let session = VoiceSession(
+      registry: registry,
+      context: ToolContext(actorID: "voice", scopes: [])
+    )
+    await session.connect(provider: provider)
+    try await waitUntil { await session.snapshot().state == .listening }
+
+    await provider.emit(
+      .toolCall(
+        id: "spoken-input",
+        name: "agent.send_input",
+        arguments: .object([
+          "agentID": .string(UUID().uuidString),
+          "text": .string("Use the staging database for the migration"),
+        ])
+      ))
+
+    let result = try await firstResult(from: provider.results)
+    #expect(!result.isError)
+    #expect(await script.inputs == ["Use the staging database for the migration"])
+    #expect(await script.prompts == ["Use the staging database for the migration"])
+    #expect(await session.snapshot().lastError == nil)
+    let trace = await session.conversationTrace()
+    #expect(trace.contains { $0.title == "Agent had exited; continued as a prompt" })
+    #expect(!trace.contains { $0.succeeded == false })
+    await session.sleep()
+  }
+
+  @Test("Verbatim relay continues an agent that had just exited")
+  func verbatimRelayContinuesExitedAgent() async throws {
+    let targetID = UUID()
+    let script = ExitingAgentScript(states: ["WAITING_USER", "DONE"])
+    let registry = ToolRegistry()
+    try await registry.register(ExitingAgentStatusProbe(script: script))
+    try await registry.register(ClosedTransportInputProbe(script: script))
+    try await registry.register(ExitingAgentPromptProbe(script: script))
+    let provider = AudioVoiceProviderProbe()
+    let session = VoiceSession(
+      registry: registry,
+      context: ToolContext(actorID: "voice", scopes: [])
+    )
+    await session.updateContext(
+      relayContext(
+        nodes: [
+          VoiceNodeContext(
+            id: targetID, name: "Chase", kind: .agent, provider: .claudeCode, status: .idle)
+        ]))
+    await session.connect(provider: provider)
+    try await waitUntil { await session.snapshot().state == .listening }
+
+    await provider.emit(.finalTranscript("Tell Chase verbatim: review the auth flow"))
+    try await waitUntil { await session.snapshot().lastConfirmation == "Sent verbatim to Chase" }
+
+    #expect(await script.prompts == ["review the auth flow"])
+    #expect(await session.snapshot().lastError == nil)
+    await session.sleep()
+  }
+
+  @Test("Tool failures use short wording and the next turn clears them")
+  func toolFailureWordingClearsOnNextTurn() async throws {
+    let script = ExitingAgentScript(states: ["IDLE"], promptFails: true)
+    let registry = ToolRegistry()
+    try await registry.register(ExitingAgentStatusProbe(script: script))
+    try await registry.register(ClosedTransportInputProbe(script: script))
+    try await registry.register(ExitingAgentPromptProbe(script: script))
+    let provider = ScriptedVoiceProvider()
+    let session = VoiceSession(
+      registry: registry,
+      context: ToolContext(actorID: "voice", scopes: [])
+    )
+    await session.connect(provider: provider)
+    try await waitUntil { await session.snapshot().state == .listening }
+
+    await provider.emit(
+      .toolCall(
+        id: "failing-prompt",
+        name: "agent.send_prompt",
+        arguments: .object([
+          "agentID": .string(UUID().uuidString),
+          "prompt": .string("summarise the diff"),
+        ])
+      ))
+
+    let result = try await firstResult(from: provider.results)
+    #expect(result.isError)
+    #expect(result.result["error"]?.stringValue == VoiceFailureText.transportClosedMessage)
+    try await waitUntil { await session.snapshot().lastError != nil }
+    let lastError = try #require(await session.snapshot().lastError)
+    #expect(lastError == VoiceFailureText.transportClosedMessage)
+    #expect(!lastError.contains("transport is closed"))
+    // The raw error stays in the trace for diagnosis.
+    let trace = await session.conversationTrace()
+    #expect(
+      trace.contains {
+        $0.kind == .toolResult && $0.succeeded == false && $0.detail.contains("transportClosed")
+      })
+
+    // Starting to speak again supersedes the old failure.
+    await provider.emit(.speechStarted)
+    try await waitUntil { await session.snapshot().lastError == nil }
+    #expect(await session.snapshot().lastError == nil)
+    await session.sleep()
+  }
+
   @Test("Latest compact canvas context is projected when voice connects")
   func contextProjection() async throws {
     let node = OttoNode(
@@ -1533,4 +1688,101 @@ private func waitUntil(
     try await Task.sleep(for: .milliseconds(10))
   }
   Issue.record("Timed out waiting for \(timeoutDescription)")
+}
+
+/// Scripts an agent through the agent tools without a real process: `states` feed
+/// agent.get_status in order (the last repeats), send_input always reports a closed transport,
+/// and send_prompt records what reached it.
+private actor ExitingAgentScript {
+  private var states: [String]
+  private let promptFails: Bool
+  private(set) var inputs: [String] = []
+  private(set) var prompts: [String] = []
+
+  init(states: [String], promptFails: Bool = false) {
+    self.states = states
+    self.promptFails = promptFails
+  }
+
+  func nextState() -> String {
+    states.count > 1 ? states.removeFirst() : states[0]
+  }
+
+  func recordInput(_ text: String) { inputs.append(text) }
+
+  func recordPrompt(_ prompt: String) throws {
+    prompts.append(prompt)
+    if promptFails { throw RuntimeError.transportClosed }
+  }
+}
+
+private struct ExitingAgentStatusProbe: OttoTool {
+  struct Input: Codable, Sendable { var agentID: UUID }
+  struct Output: Codable, Sendable { var state: String }
+
+  static let definition = ToolDefinition(
+    name: "agent.get_status",
+    description: "Scripted status probe",
+    inputSchema: .object(["type": .string("object")]),
+    outputSchema: .object(["type": .string("object")]),
+    requiredScopes: [],
+    riskLevel: .read
+  )
+
+  let script: ExitingAgentScript
+
+  func call(_ input: Input, context: ToolContext) async throws -> Output {
+    Output(state: await script.nextState())
+  }
+}
+
+private struct ClosedTransportInputProbe: OttoTool {
+  struct Input: Codable, Sendable {
+    var agentID: UUID
+    var text: String
+  }
+  struct Output: Codable, Sendable { var agentID: UUID }
+
+  static let definition = ToolDefinition(
+    name: "agent.send_input",
+    description: "Input probe whose PTY has closed",
+    inputSchema: .object(["type": .string("object")]),
+    outputSchema: .object(["type": .string("object")]),
+    requiredScopes: [],
+    riskLevel: .read
+  )
+
+  let script: ExitingAgentScript
+
+  func call(_ input: Input, context: ToolContext) async throws -> Output {
+    await script.recordInput(input.text)
+    throw RuntimeError.transportClosed
+  }
+}
+
+private struct ExitingAgentPromptProbe: OttoTool {
+  struct Input: Codable, Sendable {
+    var agentID: UUID
+    var prompt: String
+  }
+  struct Output: Codable, Sendable {
+    var agentID: UUID
+    var state: String
+  }
+
+  static let definition = ToolDefinition(
+    name: "agent.send_prompt",
+    description: "Prompt probe standing in for the resume path",
+    inputSchema: .object(["type": .string("object")]),
+    outputSchema: .object(["type": .string("object")]),
+    requiredScopes: [],
+    riskLevel: .read
+  )
+
+  let script: ExitingAgentScript
+
+  func call(_ input: Input, context: ToolContext) async throws -> Output {
+    try await script.recordPrompt(input.prompt)
+    return Output(agentID: input.agentID, state: "WORKING")
+  }
 }

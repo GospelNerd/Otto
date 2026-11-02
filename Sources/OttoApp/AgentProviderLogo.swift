@@ -3,8 +3,9 @@ import OttoModels
 import SwiftUI
 
 /// A provider identity mark, kept separate from agent status so colour can remain an honest state
-/// signal elsewhere in the card. Claude, Codex, Hermes, Kimi, OpenCode, Grok, and Pi use bundled artwork; other
-/// providers fall back to a compact system glyph.
+/// signal elsewhere in the card. Claude, Codex, Hermes, Kimi, OpenCode, Grok, and Pi use bundled artwork; Otto's
+/// own harness wears Otto's mark so it is not mistaken for Codex; other providers fall back to a
+/// compact system glyph.
 struct AgentProviderLogo: View {
   let provider: AgentProvider?
   let size: CGFloat
@@ -12,7 +13,9 @@ struct AgentProviderLogo: View {
 
   var body: some View {
     Group {
-      if let image = ProviderLogoAssets.image(for: provider) {
+      if provider == .openAI {
+        OttoMark(size: size)
+      } else if let image = ProviderLogoAssets.image(for: provider) {
         Image(nsImage: image)
           .resizable()
           .renderingMode(provider == .hermes ? .original : .template)
@@ -70,7 +73,8 @@ private enum ProviderLogoAssets {
   static func image(for provider: AgentProvider?) -> NSImage? {
     switch provider {
     case .claudeCode: claude
-    case .codex, .openAI: codex
+    case .codex: codex
+    case .openAI: nil
     case .hermes: hermes
     case .cursor: cursor
     case .kimi: kimi

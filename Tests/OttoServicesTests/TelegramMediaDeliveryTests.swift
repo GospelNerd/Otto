@@ -10,9 +10,11 @@ import Testing
 
 /// Drives the real connector against a stand-in for Telegram's Bot API: an album with a photo
 /// and a video from the paired chat must reach the allowed bot as one prompt, with the files in
-/// Otto's workspace, while media from anyone else is never downloaded.
+/// Otto's workspace, while media from anyone else is never downloaded. The queue tests in
+/// TelegramQueueTests.swift extend this suite so they share its serial order: the fake API is
+/// registered globally for api.telegram.org.
 @MainActor
-@Suite("Telegram media reaches the bot", .serialized)
+@Suite("Telegram messages reach the bot", .serialized)
 struct TelegramMediaDeliveryTests {
   @Test("An album from the paired chat arrives as one prompt; a stranger's photo is ignored")
   func albumReachesBot() async throws {
@@ -54,7 +56,7 @@ struct TelegramMediaDeliveryTests {
       .joined().prefix(24)
     defaults.set(NSNumber(value: 123), forKey: "otto.telegram.\(hash).chat")
 
-    let api = FakeBotAPI(videoBytes: videoBytes)
+    let api = FakeBotAPI(token: "123456:abcdefghijklmnopqrstuvwxyz", videoBytes: videoBytes)
     FakeBotAPI.current = api
     URLProtocol.registerClass(FakeBotAPIProtocol.self)
     defer {
@@ -64,7 +66,7 @@ struct TelegramMediaDeliveryTests {
 
     let connector = TelegramConnector(
       services: services, secrets: InMemorySecretStore(), defaults: defaults)
-    await connector.connect(token: "123456:abcdefghijklmnopqrstuvwxyz")
+    await connector.connect(token: api.token)
     #expect(connector.username == "ottotestbot")
 
     func prompt() async -> String? {
@@ -101,7 +103,7 @@ struct TelegramMediaDeliveryTests {
     await services.shutdown()
   }
 
-  private func waitUntil(
+  func waitUntil(
     timeout: Duration = .seconds(15), describe: @autoclosure () -> String = "",
     _ condition: @MainActor () async throws -> Bool
   ) async throws {
@@ -110,24 +112,42 @@ struct TelegramMediaDeliveryTests {
       if try await condition() { return }
       try await Task.sleep(for: .milliseconds(20))
     }
-    Issue.record("Timed out waiting for Telegram media to reach the bot. \(describe())")
+    Issue.record("Timed out waiting for Telegram to reach the bot. \(describe())")
   }
 }
 
-/// Answers the handful of Bot API calls the connector makes. Updates are served once.
-private final class FakeBotAPI: @unchecked Sendable {
+/// Answers the handful of Bot API calls the connector makes. Each batch of updates is served
+/// to one poll, in the order given; a test can add a batch later with `serve`. Only requests
+/// bearing this fake's token are answered: a poll still in flight from an earlier test's
+/// connector must not consume a batch meant for this one.
+final class FakeBotAPI: @unchecked Sendable {
   nonisolated(unsafe) static var current: FakeBotAPI?
+  let token: String
   private let lock = NSLock()
   private let videoBytes: Data
-  private var served = false
+  private var batches: [String]
   private var _fileRequests: [String] = []
   private var _sentMessages: [String] = []
+  private var _polls: [String] = []
 
-  init(videoBytes: Data) { self.videoBytes = videoBytes }
+  init(token: String, videoBytes: Data = Data(), updates: String = FakeBotAPI.albumUpdates) {
+    self.token = token
+    self.videoBytes = videoBytes
+    self.batches = [updates]
+  }
+
+  func accepts(_ request: URLRequest) -> Bool {
+    request.url?.path.contains("/bot\(token)/") == true
+  }
 
   var fileRequests: [String] { lock.withLock { _fileRequests } }
-  var hasServed: Bool { lock.withLock { served } }
+  var hasPendingUpdates: Bool { lock.withLock { !batches.isEmpty } }
   var sentMessages: [String] { lock.withLock { _sentMessages } }
+  /// What each getUpdates poll was answered with, for diagnostics.
+  var polls: [String] { lock.withLock { _polls } }
+
+  /// Hands these updates to the next poll.
+  func serve(_ updates: String) { lock.withLock { batches.append(updates) } }
 
   func respond(to request: URLRequest) -> Data {
     let path = request.url?.path ?? ""
@@ -143,11 +163,10 @@ private final class FakeBotAPI: @unchecked Sendable {
     case "getMe":
       return Data(#"{"ok":true,"result":{"username":"ottotestbot"}}"#.utf8)
     case "getUpdates":
-      let first = lock.withLock {
-        defer { served = true }
-        return !served
-      }
-      return Data((first ? Self.updates : #"{"ok":true,"result":[]}"#).utf8)
+      let batch = lock.withLock { batches.isEmpty ? nil : batches.removeFirst() }
+      let offset = arguments["offset"].map { "\($0)" } ?? "?"
+      lock.withLock { _polls.append(batch == nil ? "empty@\(offset)" : "batch@\(offset)") }
+      return Data((batch ?? #"{"ok":true,"result":[]}"#).utf8)
     case "getFile":
       let id = arguments["file_id"] as? String ?? ""
       let path = id == "video" ? "videos/album.mp4" : id == "photo" ? "photos/album.jpg" : "x/y.jpg"
@@ -175,7 +194,7 @@ private final class FakeBotAPI: @unchecked Sendable {
 
   /// A stranger's photo first, then the paired person's two-item album with its caption on the
   /// second item, as Telegram sometimes sends it.
-  static let updates = """
+  static let albumUpdates = """
     {"ok":true,"result":[
       {"update_id":1,"message":{"message_id":10,"chat":{"id":555,"type":"private"},
         "from":{"id":555,"is_bot":false},
@@ -190,7 +209,10 @@ private final class FakeBotAPI: @unchecked Sendable {
     """
 }
 
-private final class FakeBotAPIProtocol: URLProtocol, @unchecked Sendable {
+final class FakeBotAPIProtocol: URLProtocol, @unchecked Sendable {
+  private let lock = NSLock()
+  private var stopped = false
+
   override class func canInit(with request: URLRequest) -> Bool {
     request.url?.host == "api.telegram.org" && FakeBotAPI.current != nil
   }
@@ -198,15 +220,24 @@ private final class FakeBotAPIProtocol: URLProtocol, @unchecked Sendable {
 
   override func startLoading() {
     // Telegram holds an empty long poll open; answering at once would spin the poll loop.
-    if request.url?.path.hasSuffix("/getUpdates") == true, FakeBotAPI.current?.hasServed == true {
+    if request.url?.path.hasSuffix("/getUpdates") == true,
+      FakeBotAPI.current?.hasPendingUpdates == false
+    {
       DispatchQueue.global().asyncAfter(deadline: .now() + 0.25) { [self] in respond() }
       return
     }
     respond()
   }
 
+  /// A poll cancelled by `stop()` must not take a batch served afterwards: URLSession would
+  /// discard the answer, and the next test's connector would never see those updates.
+  override func stopLoading() {
+    lock.withLock { stopped = true }
+  }
+
   private func respond() {
-    guard let api = FakeBotAPI.current, let url = request.url,
+    guard !lock.withLock({ stopped }) else { return }
+    guard let api = FakeBotAPI.current, api.accepts(request), let url = request.url,
       let response = HTTPURLResponse(
         url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])
     else {
@@ -219,5 +250,4 @@ private final class FakeBotAPIProtocol: URLProtocol, @unchecked Sendable {
     client?.urlProtocolDidFinishLoading(self)
   }
 
-  override func stopLoading() {}
 }

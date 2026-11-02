@@ -133,11 +133,17 @@ public enum ParakeetRuntimeError: Error, LocalizedError {
 
   public var errorDescription: String? {
     switch self {
-    case .invalidInstallation(let detail): detail
-    case .failed(let status, let detail): "Parakeet exited with status \(status): \(detail)"
-    case .missingResult: "Parakeet returned no transcript"
-    case .invalidResult(let detail): "Parakeet returned an invalid result: \(detail)"
-    case .warmWorker(let detail): "Parakeet's local recognizer failed: \(detail)"
+    case .invalidInstallation(let detail): return detail
+    case .failed(let status, let detail):
+      // `detail` is the engine's whole stderr, which begins with a configuration dump; people
+      // only see the line that explains the failure.
+      let reason = TranscriptionDiagnostics.summary(of: detail)
+      return reason.isEmpty
+        ? "Parakeet exited with status \(status)"
+        : "Parakeet exited with status \(status): \(reason)"
+    case .missingResult: return "Parakeet returned no transcript"
+    case .invalidResult(let detail): return "Parakeet returned an invalid result: \(detail)"
+    case .warmWorker(let detail): return "Parakeet's local recognizer failed: \(detail)"
     }
   }
 }
@@ -185,6 +191,8 @@ public struct ParakeetOfflineRunner: Sendable {
       configuration.executableURL, arguments, environment: environment,
       timeout: LocalProcess.transcriptionTimeout(for: audioURLs))
     guard result.status == 0 else {
+      TranscriptionDiagnostics.logFailure(
+        engine: "Parakeet", status: result.status, errorText: result.errorText)
       throw ParakeetRuntimeError.failed(result.status, result.errorText)
     }
 

@@ -57,6 +57,13 @@ public enum OttoHarnessProvider: String, Codable, CaseIterable, Identifiable, Se
     case .local: "local.openai.api-key"
     }
   }
+
+  /// The order a bot with no chosen model tries hosted vendors in: OpenAI first; a configured
+  /// local server is preferred over every later entry; then the first of the rest with a stored
+  /// key wins.
+  public static let keyedFallbackOrder: [OttoHarnessProvider] = [
+    .openAI, .anthropic, .xAI, .openRouter, .deepSeek, .mistral, .groq, .gemini, .moonshot,
+  ]
 }
 
 public struct OttoHarnessModelSelection: Equatable, Sendable {
@@ -86,7 +93,7 @@ public struct OttoHarnessModelSelection: Equatable, Sendable {
     "\(provider.rawValue)/\(modelID)"
   }
 
-  private static func defaultModel(for provider: OttoHarnessProvider) -> String {
+  public static func defaultModel(for provider: OttoHarnessProvider) -> String {
     switch provider {
     case .openAI: "gpt-5.6"
     case .anthropic: "claude-sonnet-5"
@@ -563,7 +570,7 @@ public enum ExecutableLocator {
           executable: executable,
           arguments: arguments,
           environment: environment,
-          workingDirectory: FileManager.default.currentDirectoryPath
+          workingDirectory: probeWorkingDirectory()
         ))
       var data = Data()
       for await chunk in process.output { data.append(chunk) }
@@ -576,6 +583,19 @@ public enum ExecutableLocator {
     } catch {
       return nil
     }
+  }
+
+  /// A version probe must not fail because Otto's own working directory has gone away: a spawn
+  /// that cannot `chdir` never runs the binary, which would read as "not installed".
+  static func probeWorkingDirectory(
+    current: String = FileManager.default.currentDirectoryPath,
+    fileManager: FileManager = .default
+  ) -> String {
+    var isDirectory: ObjCBool = false
+    if fileManager.fileExists(atPath: current, isDirectory: &isDirectory), isDirectory.boolValue {
+      return current
+    }
+    return "/"
   }
 }
 

@@ -70,6 +70,93 @@ struct BrowserChromeTests {
     #expect(ChatSurfaceDestination.browser.title == "Browser")
   }
 
+  @Test func allTabsMenuListsEveryTabAndMarksTheActiveOne() {
+    var tabs = (1...8).map { BrowserTab(title: "Tab \($0)", url: "https://example.com/\($0)") }
+    tabs[4] = BrowserTab(title: "", url: BrowserDefaults.blankURL)
+    let items = BrowserAllTabsItem.items(tabs: tabs, activeTabID: tabs[6].id)
+    #expect(items.count == 8)
+    #expect(items.map(\.id) == tabs.map(\.id))
+    #expect(
+      items.map(\.title)
+        == ["Tab 1", "Tab 2", "Tab 3", "Tab 4", "New Tab", "Tab 6", "Tab 7", "Tab 8"])
+    #expect(items.filter(\.isActive).map(\.id) == [tabs[6].id])
+  }
+
+  @Test func tabStripOverflowsOnlyWhenTabsExceedTheRoom() {
+    #expect(!OttoBrowserTabStrip.tabsOverflow(contentWidth: 500, containerWidth: 600))
+    #expect(!OttoBrowserTabStrip.tabsOverflow(contentWidth: 600, containerWidth: 600))
+    #expect(!OttoBrowserTabStrip.tabsOverflow(contentWidth: 600.4, containerWidth: 600))
+    #expect(OttoBrowserTabStrip.tabsOverflow(contentWidth: 601, containerWidth: 600))
+    // Nothing is measured yet: never show the control for an unlaid-out strip.
+    #expect(!OttoBrowserTabStrip.tabsOverflow(contentWidth: 900, containerWidth: 0))
+  }
+
+  /// Eight tabs in a strip too narrow for them overflow their scroll view and grow the
+  /// all-tabs chevron; two tabs with room to spare do neither, so the chrome stays as it was
+  /// for people who never overflow. SwiftUI backs `ScrollView` and `Menu` with AppKit views on
+  /// macOS, so the hosted strip is probed through them (its accessibility tree is not built
+  /// for in-process callers).
+  @Test @MainActor func overflowControlAppearsOnlyWhenTabsDoNotFit() async throws {
+    _ = NSApplication.shared
+    var menus: [Int: Int] = [:]
+    for (count, width, expected) in [(8, 760, true), (2, 1400, false)] {
+      let tabs = (1...count).map {
+        BrowserTab(title: "Open tab \($0)", url: "https://example.com/\($0)")
+      }
+      let session = BrowserSession(tabs: tabs, activeTabID: tabs[0].id)
+      let probe = try await Self.probe(Self.strip(session), width: width)
+      #expect(probe.overflows == expected, "\(count) tabs at \(width)pt")
+      menus[width] = probe.menus
+    }
+    // The overflowing strip carries exactly one menu more: the all-tabs control. (The other
+    // is the Passwords menu, present at both widths.)
+    #expect(menus[760] == (menus[1400] ?? 0) + 1)
+    #expect((menus[1400] ?? 0) >= 1)
+  }
+
+  @MainActor private static func strip(_ session: BrowserSession) -> some View {
+    OttoBrowserTabStrip(
+      address: .constant(session.activeTab?.url ?? ""), addressFocusRequest: 0,
+      session: session, state: nil, pinned: [], aiVisible: false,
+      navigate: { _ in }, selectTab: { _ in }, closeTab: { _ in }, newTab: {},
+      submit: {}, goBack: {}, goForward: {}, reloadOrStop: {}, showImport: {},
+      toggleAI: {}
+    )
+    .environment(\.ottoPalette, OttoPalette(theme: OttoThemeCatalog.fieldNotes))
+  }
+
+  /// Hosts `view` at `width` in an offscreen window and reports whether its widest scroll
+  /// view (the tab row) overflows, and how many menu buttons it holds.
+  @MainActor private static func probe(
+    _ view: some View, width: Int
+  ) async throws -> (overflows: Bool, menus: Int) {
+    let host = NSHostingView(rootView: view.frame(width: CGFloat(width), height: 44))
+    let window = NSWindow(
+      contentRect: NSRect(x: -10000, y: -10000, width: width, height: 44),
+      styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.orderFront(nil)
+    defer { window.close() }
+    host.layoutSubtreeIfNeeded()
+    try await Task.sleep(for: .milliseconds(200))
+    host.layoutSubtreeIfNeeded()
+    var views: [NSView] = []
+    func collect(_ view: NSView) {
+      views.append(view)
+      view.subviews.forEach(collect)
+    }
+    collect(host)
+    let tabRow = try #require(
+      views.compactMap { $0 as? NSScrollView }
+        .max { ($0.documentView?.frame.width ?? 0) < ($1.documentView?.frame.width ?? 0) })
+    let overflows = OttoBrowserTabStrip.tabsOverflow(
+      contentWidth: tabRow.documentView?.frame.width ?? 0,
+      containerWidth: tabRow.contentView.bounds.width)
+    let menus = views.filter { String(describing: type(of: $0)).contains("PopupButton") }
+    return (overflows, menus.count)
+  }
+
   /// Opt-in rendering of the new chrome in the default light theme and a dark one.
   @Test @MainActor func renderChrome() async throws {
     guard let directory = ProcessInfo.processInfo.environment["OTTO_BROWSER_CHROME_SNAPSHOTS"]
@@ -139,6 +226,39 @@ struct BrowserChromeTests {
       let data = try #require(bitmap.representation(using: .png, properties: [:]))
       try data.write(
         to: URL(fileURLWithPath: directory).appendingPathComponent("chrome-\(theme.id).png"))
+    }
+
+    // Eight tabs in 900pt: the strip fades at its right edge and grows the all-tabs chevron.
+    do {
+      let many = (1...8).map {
+        BrowserTab(title: "Open tab \($0) — a long title", url: "https://example.com/\($0)")
+      }
+      let palette = OttoPalette(theme: OttoThemeCatalog.theme(id: "highfell"))
+      let view = OttoBrowserTabStrip(
+        address: .constant("example.com/3"), addressFocusRequest: 0,
+        session: BrowserSession(tabs: many, activeTabID: many[2].id), state: nil,
+        pinned: [], aiVisible: false, navigate: { _ in }, selectTab: { _ in },
+        closeTab: { _ in }, newTab: {}, submit: {}, goBack: {}, goForward: {},
+        reloadOrStop: {}, showImport: {}, toggleAI: {}
+      )
+      .environment(\.ottoPalette, palette)
+      .frame(width: 900, height: 44)
+      .background(palette.surface)
+      let host = NSHostingView(rootView: view)
+      let window = NSWindow(
+        contentRect: NSRect(x: -10000, y: -10000, width: 900, height: 44),
+        styleMask: [.borderless], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      window.orderFront(nil)
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      try await Task.sleep(for: .milliseconds(250))
+      let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let data = try #require(bitmap.representation(using: .png, properties: [:]))
+      try data.write(
+        to: URL(fileURLWithPath: directory).appendingPathComponent("chrome-overflow.png"))
     }
 
     for (name, text) in [

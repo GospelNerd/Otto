@@ -75,6 +75,14 @@ struct CustomAgentCreationView: View {
         catalogStore.load(provider, accountID: modelAccountID)
         alignSelections(for: provider)
       }
+      if let info = availability.first(where: { $0.provider == provider }), !info.installed {
+        // Say why a harness is greyed out, so "not installed" is never a dead end.
+        Text(info.remediation ?? "Install it, sign in, then come back.")
+          .font(.ottoMono(8))
+          .foregroundStyle(palette.muted)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("agent-harness-remediation")
+      }
 
       BotCreationAccountPicker(accounts: services.providerAccounts, selection: $accountID)
         .onChange(of: accountID) { _, _ in

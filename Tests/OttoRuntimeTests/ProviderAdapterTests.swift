@@ -126,6 +126,142 @@ struct ProviderAdapterTests {
     }
   }
 
+  @Test("A bot with no model uses the first hosted vendor that has a stored key")
+  func ottoHarnessDefaultsToFirstKeyedVendor() async throws {
+    let stub = try stubProvider(named: "otto-openai-agent", version: "1.0.0")
+    defer { try? FileManager.default.removeItem(at: stub.deletingLastPathComponent()) }
+    let suite = "otto.tests.keyed-harness.\(UUID().uuidString)"
+    defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+    func adapter(keys: [OttoHarnessProvider: String]) -> OpenAIDirectAdapter {
+      OpenAIDirectAdapter(
+        executablePath: stub.path, credentialProvider: { keys[$0] }, localDefaultsSuite: suite)
+    }
+    func launch(
+      _ adapter: OpenAIDirectAdapter, account: AgentAccountLaunch? = nil
+    ) async throws -> (backend: String, model: String, key: String?) {
+      var request = AgentLaunchRequest(workspacePath: "/tmp", prompt: "hi", model: nil)
+      request.account = account
+      let spec = try await adapter.buildLaunchSpec(request)
+      return (
+        spec.arguments[spec.arguments.firstIndex(of: "--backend")! + 1],
+        spec.arguments[spec.arguments.firstIndex(of: "--model")! + 1],
+        spec.environment["OTTO_MODEL_API_KEY"]
+      )
+    }
+
+    // The reporter's Mac: only an OpenRouter key, nothing chosen on the bot.
+    let onlyOpenRouter = try await launch(adapter(keys: [.openRouter: "router-key"]))
+    #expect(onlyOpenRouter.backend == "openrouter")
+    #expect(onlyOpenRouter.model == "openrouter/auto")
+    #expect(onlyOpenRouter.key == "router-key")
+
+    // OpenAI still comes first when it is set up, and the fixed order decides between others.
+    let both = try await launch(adapter(keys: [.openRouter: "router-key", .openAI: "openai-key"]))
+    #expect(both.backend == "openai")
+    #expect(both.key == "openai-key")
+    let later = try await launch(adapter(keys: [.moonshot: "moon-key", .gemini: "gemini-key"]))
+    #expect(later.backend == "gemini")
+    #expect(later.key == "gemini-key")
+
+    // A Mac set up for a local server keeps using it: a stray Gemini key must not start billing.
+    try LocalModelConfiguration(baseURL: "http://127.0.0.1:11434/v1", modelID: "qwen3:8b")
+      .save(defaults: try #require(UserDefaults(suiteName: suite)))
+    let localWins = try await launch(adapter(keys: [.gemini: "gemini-key"]))
+    #expect(localWins.backend == "local")
+    #expect(localWins.model == "qwen3:8b")
+    #expect(localWins.key == nil || localWins.key == "")
+    // ...but OpenAI still comes first even with a local server configured.
+    let openAIOverLocal = try await launch(adapter(keys: [.gemini: "g", .openAI: "openai-key"]))
+    #expect(openAIOverLocal.backend == "openai")
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+
+    // An account's own key counts the same way as a Mac-wide one.
+    let account = AgentAccountLaunch(
+      accountID: UUID(), accountName: "Work", harnessCredentials: ["deepseek.api-key": "acct-key"])
+    let fromAccount = try await launch(adapter(keys: [:]), account: account)
+    #expect(fromAccount.backend == "deepseek")
+    #expect(fromAccount.key == "acct-key")
+
+    // Choosing a model explicitly keeps the old, strict behaviour.
+    await #expect(throws: RuntimeError.self) {
+      _ = try await adapter(keys: [.openRouter: "router-key"]).buildLaunchSpec(
+        AgentLaunchRequest(workspacePath: "/tmp", prompt: "hi", model: "openai/gpt-5.6"))
+    }
+  }
+
+  @Test("With nothing configured, the launch error says where keys and local servers live")
+  func ottoHarnessNothingConfiguredMessage() async throws {
+    let stub = try stubProvider(named: "otto-openai-agent", version: "1.0.0")
+    defer { try? FileManager.default.removeItem(at: stub.deletingLastPathComponent()) }
+    let suite = "otto.tests.empty-harness.\(UUID().uuidString)"
+    defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+    let adapter = OpenAIDirectAdapter(
+      executablePath: stub.path, credentialProvider: { _ in nil }, localDefaultsSuite: suite)
+    do {
+      _ = try await adapter.buildLaunchSpec(
+        AgentLaunchRequest(workspacePath: "/tmp", prompt: "hi", model: nil))
+      Issue.record("A launch with no provider configured must fail")
+    } catch let error as RuntimeError {
+      let message = error.localizedDescription
+      #expect(message.contains("Otto Settings → Models"))
+      for vendor in OttoHarnessProvider.keyedFallbackOrder {
+        #expect(message.contains(vendor.displayName), "\(vendor.displayName) missing from message")
+      }
+      #expect(message.contains("local OpenAI-compatible server"))
+    }
+
+    // A bot still pointing at a local server that was removed says so, instead of a generic
+    // missing-settings line.
+    do {
+      _ = try await adapter.buildLaunchSpec(
+        AgentLaunchRequest(workspacePath: "/tmp", prompt: "hi", model: "local/auto/best-coding"))
+      Issue.record("A removed local server must fail the launch")
+    } catch let error as RuntimeError {
+      #expect(error.localizedDescription.contains("no longer configured"))
+    }
+  }
+
+  @Test("A bundled runtime that fails its version probe is reported missing with its path")
+  func ottoHarnessRuntimeProbeFailure() async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: "otto-harness-probe-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let broken = directory.appending(path: "otto-openai-agent")
+    try Data("#!/bin/sh\nexit 1\n".utf8).write(to: broken)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: broken.path)
+
+    let status = await OpenAIDirectAdapter(
+      executablePath: broken.path, credentialProvider: { _ in nil }
+    ).detectInstallation()
+    guard case .missing(let remediation) = status else {
+      Issue.record("A runtime exiting 1 on --version must be missing, got \(status)")
+      return
+    }
+    #expect(remediation.contains(broken.path))
+    #expect(remediation.contains("Reinstall Otto"))
+    #expect(remediation.contains("sessions are kept"))
+
+    // A missing file names where the runtime was expected.
+    let absent = directory.appending(path: "absent-agent").path
+    let absentStatus = await OpenAIDirectAdapter(
+      executablePath: absent, credentialProvider: { _ in nil }
+    ).detectInstallation()
+    guard case .missing(let absentRemediation) = absentStatus else {
+      Issue.record("An absent runtime must be missing")
+      return
+    }
+    #expect(absentRemediation.contains(absent))
+
+    // And a working runtime is found, path and version included.
+    let working = try stubProvider(named: "otto-openai-agent", version: "3.0.0")
+    defer { try? FileManager.default.removeItem(at: working.deletingLastPathComponent()) }
+    let installed = await OpenAIDirectAdapter(
+      executablePath: working.path, credentialProvider: { _ in nil }
+    ).detectInstallation()
+    #expect(installed == .installed(path: working.path, version: "otto-openai-agent 3.0.0"))
+  }
+
   @Test("Otto Harness resolves legacy OpenAI ids and provider-prefixed model ids")
   func ottoHarnessModelRouting() {
     #expect(

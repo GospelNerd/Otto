@@ -216,6 +216,17 @@ struct WorkspaceView: View {
     .onChange(of: services.botNavigationRequest) { _, request in
       if request != nil { showingPersonalHome = false }
     }
+    #if DEBUG
+      .onReceive(NotificationCenter.default.publisher(for: OttoDevProbe.goNotification)) { note in
+        let place = note.object as? String ?? ""
+        if place == "home" {
+          showingPersonalHome = true
+        } else if let destination = ChatSurfaceDestination(rawValue: place) {
+          openChatDestination(destination)
+        }
+        OttoDevProbe.log("go \(place) showingPersonalHome=\(showingPersonalHome)")
+      }
+    #endif
     .environment(\.ottoPalette, palette)
     .dynamicTypeSize(dynamicTypeSize)
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: store.activeCanvas.themeID)
@@ -277,14 +288,7 @@ struct WorkspaceView: View {
         let id: UUID
         switch target {
         case .newSession:
-          guard let newID = await quickLaunchAgentForChat(provider) else {
-            throw NSError(
-              domain: "OttoHome", code: 1,
-              userInfo: [
-                NSLocalizedDescriptionKey:
-                  "Could not start the agent. Check its connection in Settings."
-              ])
-          }
+          let newID = try await quickLaunchAgentForChat(provider)
           id = newID
           // File the session under the Home profile's project so its folders and account apply.
           if let projectID = services.dailyBrief.selectedProfile.defaultProjectID {
@@ -486,7 +490,7 @@ struct WorkspaceView: View {
         showingHireBot = true
       },
       quickLaunchAgent: { provider, folder in
-        await quickLaunchAgentForChat(provider, workingDirectory: folder)
+        try await quickLaunchAgentForChat(provider, workingDirectory: folder)
       }
     )
     .environment(\.ottoWindowIsActive, scenePhase == .active && windowIsVisible)
@@ -725,12 +729,19 @@ struct WorkspaceView: View {
   }
 
   private func quickLaunchAgent(_ provider: AgentProvider) {
-    Task { _ = await quickLaunchAgentForChat(provider) }
+    Task {
+      do { _ = try await quickLaunchAgentForChat(provider) } catch {
+        conversationError = error.localizedDescription
+      }
+    }
   }
 
+  /// Starts a one-off session. A failure (a missing Otto Harness key, a CLI that will not start)
+  /// is thrown so the caller can show it; swallowing it left the person with a closed menu and
+  /// no session, and no idea why.
   private func quickLaunchAgentForChat(
     _ provider: AgentProvider, workingDirectory: String? = nil
-  ) async -> UUID? {
+  ) async throws -> UUID {
     let point = nextPlacementPoint()
     let key =
       switch provider {
@@ -748,7 +759,7 @@ struct WorkspaceView: View {
     let mode =
       AgentPermissionMode(rawValue: UserDefaults.standard.string(forKey: key) ?? "")
       ?? .workspaceWrite
-    return try? await services.spawnAgent(
+    return try await services.spawnAgent(
       provider: provider,
       workingDirectory: provider.startsInProjectFolder ? workingDirectory : nil,
       at: point,
