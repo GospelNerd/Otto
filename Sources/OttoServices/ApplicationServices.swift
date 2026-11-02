@@ -328,6 +328,10 @@ public final class ApplicationServices: ObservableObject {
   /// Tests stand in for the agent that wrote a reviewed draft: gets its node and the prompt,
   /// returns its answer. Nil in the app, where the prompt goes to the real session.
   var reviewAgentOverride: (@MainActor (UUID, String) async throws -> String?)?
+  /// Tests stand in for answering an agent's permission prompt: node, allowed.
+  var reviewPermissionOverride: (@MainActor (UUID, Bool) -> Void)?
+  /// Approved actions still running, by review, so tests can wait for one to finish.
+  var reviewActionTasks: [UUID: Task<Void, Never>] = [:]
   var hookDaemon: Process?
   var hookOutputTask: Task<Void, Never>?
   var hookRoutesSignature: String?

@@ -276,6 +276,7 @@ struct HomeReviewTests {
     #expect(services.routines.recentRuns(routineID: post.id).isEmpty)
 
     try await services.approveReview(id: review.id, editedDraft: "Press ⌃⌥Space, then talk.")
+    await services.reviewActionTasks[review.id]?.value
 
     // The agent that wrote it is told to do the action with exactly the approved text.
     #expect(sent.count == 1)
@@ -287,6 +288,130 @@ struct HomeReviewTests {
     // And the next step in the flow fired.
     #expect(!services.routines.recentRuns(routineID: post.id).isEmpty)
     #expect(services.homeReviews.review(id: review.id)?.state == .approved)
+  }
+
+  // MARK: The approved action stays on Home
+
+  @MainActor @Test func approvedActionStaysOnHomeUntilDismissed() async throws {
+    let (services, root) = reviewServices()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (tip, _) = try tipFlow(services)
+    var release: CheckedContinuation<Void, Never>?
+    services.reviewAgentOverride = { _, _ in
+      await withCheckedContinuation { release = $0 }
+      return "Posted it in #tips."
+    }
+    try services.holdRoutineResultForReview(
+      tip, runID: UUID(), nodeID: UUID(), result: "Press ⌃⌥Space.", depth: 0)
+    let id = try #require(services.homeReviews.open.first).id
+
+    try await services.approveReview(id: id)
+    // While the agent works the card is still on Home, no longer waiting on a decision.
+    for _ in 0..<20 where release == nil { await Task.yield() }
+    var review = try #require(services.homeReviews.review(id: id))
+    #expect(review.actionStatus == .running)
+    #expect(services.homeReviews.open.isEmpty)
+    #expect(services.homeReviews.onHome.map(\.id) == [id])
+    #expect(!review.needsPerson)
+
+    release?.resume()
+    await services.reviewActionTasks[id]?.value
+    review = try #require(services.homeReviews.review(id: id))
+    #expect(review.actionStatus == .done)
+    #expect(review.actionResult == "Posted it in #tips.")
+    #expect(services.homeReviews.onHome.map(\.id) == [id])
+
+    services.dismissReview(id: id)
+    #expect(services.homeReviews.onHome.isEmpty)
+  }
+
+  @MainActor @Test func permissionPromptsAreAnsweredFromTheCard() async throws {
+    let (services, root) = reviewServices()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (tip, _) = try tipFlow(services)
+    let agent = UUID()
+    var answers: [(UUID, Bool)] = []
+    services.reviewPermissionOverride = { node, allow in answers.append((node, allow)) }
+    try services.holdRoutineResultForReview(
+      tip, runID: UUID(), nodeID: agent, result: "Press ⌃⌥Space.", depth: 0)
+    let id = try #require(services.homeReviews.open.first).id
+    try services.homeReviews.update(id: id) {
+      $0.state = .approved
+      $0.actionStatus = .running
+      $0.actionPermission = "Bash: mkdir -p output && printf … >> tips.md"
+    }
+    #expect(try #require(services.homeReviews.review(id: id)).needsPerson)
+
+    await services.answerReviewPermission(id: id, allow: true)
+    #expect(answers.count == 1)
+    #expect(answers.first?.0 == agent)
+    #expect(answers.first?.1 == true)
+    #expect(services.homeReviews.review(id: id)?.actionPermission == nil)
+  }
+
+  @MainActor @Test func aFailedActionSaysSoAndCanBeDismissed() async throws {
+    let (services, root) = reviewServices()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (tip, _) = try tipFlow(services)
+    services.reviewAgentOverride = { _, _ in
+      throw ToolRegistryError.invalidInput("Discord is not connected")
+    }
+    try services.holdRoutineResultForReview(
+      tip, runID: UUID(), nodeID: UUID(), result: "Press ⌃⌥Space.", depth: 0)
+    let id = try #require(services.homeReviews.open.first).id
+    try await services.approveReview(id: id)
+    await services.reviewActionTasks[id]?.value
+    let review = try #require(services.homeReviews.review(id: id))
+    #expect(review.actionStatus == .failed)
+    #expect(review.problem?.contains("Discord is not connected") == true)
+    #expect(review.isActing)
+    services.dismissReview(id: id)
+    #expect(services.homeReviews.onHome.isEmpty)
+  }
+
+  @MainActor @Test func approvingWithoutAnActionLeavesNothingOnHome() async throws {
+    let (services, root) = reviewServices()
+    defer { try? FileManager.default.removeItem(at: root) }
+    var tip = try tipFlow(services).0
+    tip.afterApproval = nil
+    tip = try services.routines.save(tip)
+    try services.holdRoutineResultForReview(
+      tip, runID: UUID(), nodeID: UUID(), result: "Press ⌃⌥Space.", depth: 0)
+    let id = try #require(services.homeReviews.open.first).id
+    try await services.approveReview(id: id)
+    #expect(services.homeReviews.review(id: id)?.actionStatus == nil)
+    #expect(services.homeReviews.onHome.isEmpty)
+  }
+
+  @MainActor @Test func anActionRunningWhenOttoQuitShowsAsInterrupted() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appending(path: "otto-review-restart-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = HomeReviewStore(workspacePath: root.path)
+    let review = try store.add(HomeReview(title: "Tip", requester: "Bot", draft: "A tip"))
+    try store.update(id: review.id) {
+      $0.state = .approved
+      $0.actionStatus = .running
+      $0.actionPermission = "Bash: echo hi"
+    }
+    let reloaded = HomeReviewStore(workspacePath: root.path)
+    let after = try #require(reloaded.review(id: review.id))
+    #expect(after.actionStatus == .interrupted)
+    #expect(after.actionPermission == nil)
+    #expect(reloaded.onHome.map(\.id) == [review.id])
+  }
+
+  @Test func reviewFilesFromBeforeActionTrackingStillDecode() throws {
+    let json = """
+      {"id":"\(UUID().uuidString)","title":"T","requester":"R","draft":"D","state":"approved",
+       "notes":[],"chainDepth":0,"createdAt":"2026-10-30T09:00:00Z",
+       "updatedAt":"2026-10-30T09:00:00Z"}
+      """
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let review = try decoder.decode(HomeReview.self, from: Data(json.utf8))
+    #expect(review.actionStatus == nil)
+    #expect(!review.isActing)
   }
 
   @MainActor @Test func rejectingSendsNothingAndStopsTheFlow() async throws {

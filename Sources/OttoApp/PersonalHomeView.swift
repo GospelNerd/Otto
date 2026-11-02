@@ -180,7 +180,8 @@ struct PersonalHomeView: View {
     }
   }
   private var attentionCount: Int {
-    attention.count + recordedAttention.count + services.homeReviews.open.count
+    attention.count + recordedAttention.count
+      + services.homeReviews.onHome.filter(\.needsPerson).count
   }
 
   var body: some View {
@@ -822,11 +823,14 @@ struct PersonalHomeView: View {
           .accessibilityLabel("Review \(agentName(item.nodeID))")
         }
       }
-      let waitingReviews = services.homeReviews.open.count
+      let waitingReviews = services.homeReviews.onHome.filter(\.needsPerson).count
       if waitingReviews > 0 {
         VStack(alignment: .leading, spacing: 4) {
-          Text(waitingReviews == 1 ? "1 draft to review" : "\(waitingReviews) drafts to review")
-            .font(.ottoDisplay(12).weight(.medium))
+          Text(
+            waitingReviews == 1
+              ? "1 thing for your review" : "\(waitingReviews) things for your review"
+          )
+          .font(.ottoDisplay(12).weight(.medium))
           Text("Approve, comment on or reject them under For your review.")
             .font(.ottoDisplay(11)).foregroundStyle(cardPalette.muted).lineLimit(2)
         }

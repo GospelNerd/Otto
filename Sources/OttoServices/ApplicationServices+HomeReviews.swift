@@ -13,6 +13,8 @@ import OttoTools
 extension ApplicationServices {
   /// How long a comment waits for the agent's reply before giving up.
   static let reviewReplyTimeout: Duration = .seconds(15 * 60)
+  /// An approved action can wait on the person's permission, so it gets much longer.
+  static let reviewActionTimeout: Duration = .seconds(24 * 3600)
 
   /// The engine's review handler: a finished automation answer waits on Home.
   func holdRoutineResultForReview(
@@ -56,14 +58,61 @@ extension ApplicationServices {
       Now do this with exactly the approved text: \(action)
       Reply with one short line saying what you did.
       """
-    do {
-      _ = try await promptReviewAgent(review, prompt: prompt, awaitAnswer: false)
-    } catch {
-      _ = try? homeReviews.update(id: id) {
-        $0.problem = "Approved, but the next step couldn’t start: \(error.localizedDescription)"
-      }
-      throw error
+    try homeReviews.update(id: id) {
+      $0.actionStatus = .running
+      $0.actionPermission = nil
+      $0.actionResult = nil
     }
+    // The card stays on Home while the agent works, so its permission prompts and result show
+    // there instead of only in Chat.
+    reviewActionTasks[id] = Task { [weak self] in
+      await self?.runApprovedAction(reviewID: id, prompt: prompt)
+    }
+  }
+
+  /// Sends the approved action to the agent and keeps the card up to date until it finishes.
+  func runApprovedAction(reviewID id: UUID, prompt: String) async {
+    defer { reviewActionTasks[id] = nil }
+    guard let review = homeReviews.review(id: id) else { return }
+    do {
+      let answer = try await promptReviewAgent(
+        review, prompt: prompt, awaitAnswer: true, timeout: Self.reviewActionTimeout,
+        onStatusChange: { [weak self] nodeID in
+          guard let self else { return }
+          let pending = await self.supervisor.pendingPermission(agentID: nodeID)
+          _ = try? self.homeReviews.update(id: id) { $0.actionPermission = pending?.reason }
+        })
+      _ = try? homeReviews.update(id: id) { review in
+        review.actionStatus = .done
+        review.actionPermission = nil
+        review.actionResult =
+          answer?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty.map {
+            String($0.prefix(600))
+          } ?? "Done."
+      }
+    } catch {
+      _ = try? homeReviews.update(id: id) { review in
+        review.actionStatus = .failed
+        review.actionPermission = nil
+        review.problem = "Approved, but the action didn’t finish: \(error.localizedDescription)"
+      }
+    }
+  }
+
+  /// Allow or Deny on the card: answers the permission prompt the approved action is stuck on.
+  public func answerReviewPermission(id: UUID, allow: Bool) async {
+    guard let nodeID = homeReviews.review(id: id)?.agentNodeID else { return }
+    if let override = reviewPermissionOverride {
+      override(nodeID, allow)
+    } else {
+      await resolveAgentPermission(agentID: nodeID, approved: allow)
+    }
+    _ = try? homeReviews.update(id: id) { $0.actionPermission = nil }
+  }
+
+  /// Clears a finished action's card from Home.
+  public func dismissReview(id: UUID) {
+    _ = try? homeReviews.update(id: id) { $0.actionDismissed = true }
   }
 
   public func rejectReview(id: UUID, reason: String? = nil) throws {
@@ -141,11 +190,14 @@ extension ApplicationServices {
 
   /// Prompts the session that wrote the draft, or, when that session has closed, runs the
   /// automation again with the same prompt. Returns the agent's answer when asked to wait.
-  private func promptReviewAgent(_ review: HomeReview, prompt: String, awaitAnswer: Bool)
-    async throws -> String?
-  {
+  private func promptReviewAgent(
+    _ review: HomeReview, prompt: String, awaitAnswer: Bool,
+    timeout: Duration = reviewReplyTimeout,
+    onStatusChange: (@MainActor @Sendable (UUID) async -> Void)? = nil
+  ) async throws -> String? {
     if let override = reviewAgentOverride, let node = review.agentNodeID {
       let answer = try await override(node, prompt)
+      await onStatusChange?(node)
       return awaitAnswer ? answer : nil
     }
     let bus = supervisor.eventBus
@@ -166,6 +218,7 @@ extension ApplicationServices {
     return try await withThrowingTaskGroup(of: String?.self) { group in
       group.addTask { [supervisor] in
         for await event in bus.stream(afterSequence: cursor) where event.nodeID == nodeID {
+          if event.type == .agentStatusChanged { await onStatusChange?(nodeID) }
           if event.type == .agentRunCompleted {
             return try? await supervisor.snapshot(agentID: nodeID).result
           }
@@ -176,7 +229,7 @@ extension ApplicationServices {
         return nil
       }
       group.addTask {
-        try await Task.sleep(for: Self.reviewReplyTimeout)
+        try await Task.sleep(for: timeout)
         throw ToolRegistryError.invalidInput("The agent didn’t reply in time.")
       }
       let answer = try await group.next() ?? nil

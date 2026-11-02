@@ -12,6 +12,9 @@
   ///   permission:<agent UUID>:approve|deny:<report file>  what the chat card's Approve/Deny do
   ///   settings[:<page>]                        open the Settings window, optionally on a page
   ///   go:<place>                               show Home, or a Chat place: conversation, browser, files…
+  ///   review:<output file>\n<approve|comment|reject|allow|deny|dismiss>\n<review UUID>[\n<text>]
+  ///                                            what a Home review card's buttons do; text is the
+  ///                                            comment, edited draft or reject reason
   @MainActor
   final class OttoDevProbe {
     static let shared = OttoDevProbe()
@@ -67,6 +70,16 @@
           let after = await services.supervisor.hasPendingPermission(agentID: agentID)
           log("pendingAfter=\(after) error=\(services.errorMessage ?? "none")")
         }
+      } else if command.hasPrefix("review:") {
+        let parts = command.dropFirst(7).split(
+          separator: "\n", maxSplits: 3, omittingEmptySubsequences: false
+        ).map(String.init)
+        guard parts.count >= 3 else { return }
+        Task {
+          await self.review(
+            action: parts[1], id: parts[2], text: parts.count == 4 ? parts[3] : nil,
+            output: parts[0])
+        }
       } else if command.hasPrefix("tool:") {
         let parts = command.dropFirst(5).split(separator: "\n", maxSplits: 2).map(String.init)
         guard parts.count >= 2 else { return }
@@ -101,6 +114,31 @@
       try? listing.write(
         toFile: (directory as NSString).appendingPathComponent("windows.txt"), atomically: true,
         encoding: .utf8)
+    }
+
+    private func review(action: String, id: String, text: String?, output: String) async {
+      let result: String
+      do {
+        guard let services, let reviewID = UUID(uuidString: id) else {
+          throw CocoaError(.featureUnsupported)
+        }
+        switch action {
+        case "approve": try await services.approveReview(id: reviewID, editedDraft: text)
+        case "comment": try await services.commentOnReview(id: reviewID, text: text ?? "")
+        case "reject": try services.rejectReview(id: reviewID, reason: text)
+        case "allow", "deny":
+          await services.answerReviewPermission(id: reviewID, allow: action == "allow")
+        case "dismiss": services.dismissReview(id: reviewID)
+        default: throw CocoaError(.featureUnsupported)
+        }
+        let state = services.homeReviews.review(id: reviewID)
+        result =
+          "OK state=\(state?.state.rawValue ?? "missing") action=\(state?.actionStatus?.rawValue ?? "none")"
+          + " permission=\(state?.actionPermission ?? "none")\n\(state?.draft ?? "")"
+      } catch {
+        result = "ERROR: \(error)"
+      }
+      try? result.write(toFile: output, atomically: true, encoding: .utf8)
     }
 
     private func callTool(_ name: String, json: String, output: String) async {

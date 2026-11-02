@@ -11,6 +11,15 @@ public struct HomeReview: Codable, Identifiable, Sendable, Equatable {
     case rejected
   }
 
+  /// How the "when I approve, do this" action is going once the person approves.
+  public enum ActionStatus: String, Codable, Sendable, Equatable {
+    case running
+    case done
+    case failed
+    /// Otto quit before it finished, so nobody knows whether it happened.
+    case interrupted
+  }
+
   public struct Note: Codable, Identifiable, Sendable, Equatable {
     public enum Author: String, Codable, Sendable, Equatable {
       case person
@@ -50,6 +59,14 @@ public struct HomeReview: Codable, Identifiable, Sendable, Equatable {
   public var decidedAt: Date?
   /// Why the last comment or approval couldn't reach the agent, shown on the card.
   public var problem: String?
+  // The approved action's progress. All optional so older Otto versions still read the file.
+  public var actionStatus: ActionStatus?
+  /// What the agent is asking permission for while doing the action, e.g. a shell command.
+  public var actionPermission: String?
+  /// The agent's one-line report once the action finished.
+  public var actionResult: String?
+  /// The person cleared the finished card from Home.
+  public var actionDismissed: Bool?
 
   public init(
     id: UUID = UUID(), title: String, requester: String, draft: String,
@@ -75,4 +92,11 @@ public struct HomeReview: Codable, Identifiable, Sendable, Equatable {
   }
 
   public var isOpen: Bool { state == .pending || state == .revising }
+  /// Approved, and its action is still on Home: running, waiting for permission, or finished
+  /// but not yet dismissed.
+  public var isActing: Bool {
+    state == .approved && actionStatus != nil && actionDismissed != true
+  }
+  /// Waiting on the person: a decision, or permission for the approved action.
+  public var needsPerson: Bool { isOpen || (isActing && actionPermission != nil) }
 }

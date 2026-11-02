@@ -49,6 +49,12 @@ public final class HomeReviewStore: ObservableObject {
         for index in saved.reviews.indices where saved.reviews[index].state == .revising {
           saved.reviews[index].state = .pending
         }
+        // An approved action that was running can't be followed after a restart.
+        for index in saved.reviews.indices
+        where saved.reviews[index].actionStatus == .running {
+          saved.reviews[index].actionStatus = .interrupted
+          saved.reviews[index].actionPermission = nil
+        }
         state = saved
       }
     } catch {
@@ -60,6 +66,11 @@ public final class HomeReviewStore: ObservableObject {
   /// Waiting on the person, oldest first so nothing gets buried.
   public var open: [HomeReview] {
     state.reviews.filter(\.isOpen).sorted { $0.createdAt < $1.createdAt }
+  }
+
+  /// Everything Home shows: open reviews, then approved actions still in progress or unread.
+  public var onHome: [HomeReview] {
+    open + state.reviews.filter(\.isActing).sorted { $0.updatedAt > $1.updatedAt }
   }
 
   public func review(id: UUID) -> HomeReview? { state.reviews.first { $0.id == id } }
