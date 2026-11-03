@@ -1,7 +1,14 @@
-import Darwin
 import Dispatch
 import Foundation
 import OttoTools
+
+#if canImport(Darwin)
+  import Darwin
+#elseif canImport(Glibc)
+  import Glibc
+#elseif canImport(Musl)
+  import Musl
+#endif
 
 public struct ControlClient: Sendable {
   private static let requestQueue: OperationQueue = {
@@ -118,7 +125,7 @@ public struct ControlClient: Sendable {
     timeoutMilliseconds: Int32? = nil
   ) throws -> ControlResponse {
     let descriptor = try UnixSocket.create()
-    defer { Darwin.close(descriptor) }
+    defer { systemClose(descriptor) }
     try UnixSocket.connect(descriptor, path: socketPath)
     try UnixSocket.setNonBlocking(descriptor)
     try UnixSocket.writeMessage(request, to: descriptor)

@@ -1,7 +1,14 @@
-import Darwin
 import Dispatch
 import Foundation
 import OttoTools
+
+#if canImport(Darwin)
+  import Darwin
+#elseif canImport(Glibc)
+  import Glibc
+#elseif canImport(Musl)
+  import Musl
+#endif
 
 public final class ControlServer: @unchecked Sendable {
   public let socketPath: String
@@ -40,11 +47,11 @@ public final class ControlServer: @unchecked Sendable {
     let listener = try UnixSocket.create()
     do {
       try UnixSocket.bind(listener, path: socketPath)
-      guard Darwin.listen(listener, SOMAXCONN) == 0 else { throw UnixSocket.socketError() }
+      guard systemListen(listener, SOMAXCONN) == 0 else { throw UnixSocket.socketError() }
       try UnixSocket.setNonBlocking(listener)
       chmod(socketPath, 0o600)
     } catch {
-      Darwin.close(listener)
+      systemClose(listener)
       throw error
     }
     self.listener = listener
@@ -66,14 +73,14 @@ public final class ControlServer: @unchecked Sendable {
       guard !stopped else { return }
       stopped = true
       source.cancel()
-      Darwin.close(listener)
+      systemClose(listener)
       unlink(socketPath)
     }
   }
 
   private func acceptConnections() {
     while true {
-      let client = Darwin.accept(listener, nil, nil)
+      let client = systemAccept(listener)
       if client < 0 {
         if errno == EINTR { continue }
         return
@@ -82,7 +89,7 @@ public final class ControlServer: @unchecked Sendable {
         try UnixSocket.setNonBlocking(client)
         try UnixSocket.setCloseOnExec(client)
       } catch {
-        Darwin.close(client)
+        systemClose(client)
         continue
       }
       connectionQueue.addOperation { [weak self] in
@@ -103,12 +110,12 @@ public final class ControlServer: @unchecked Sendable {
         ),
         to: client
       )
-      Darwin.close(client)
+      systemClose(client)
       return
     }
     Task { [weak self] in
       guard let self else {
-        Darwin.close(client)
+        systemClose(client)
         return
       }
       await handle(request, client: client)
@@ -116,7 +123,7 @@ public final class ControlServer: @unchecked Sendable {
   }
 
   private func handle(_ request: ControlRequest, client: Int32) async {
-    defer { Darwin.close(client) }
+    defer { systemClose(client) }
     let response = await process(request)
     try? UnixSocket.writeMessage(response, to: client)
   }
