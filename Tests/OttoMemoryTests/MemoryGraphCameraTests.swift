@@ -1,7 +1,10 @@
-import CoreGraphics
 import Foundation
 import OttoMemory
 import Testing
+
+#if canImport(CoreGraphics)
+  import CoreGraphics
+#endif
 
 @Suite("Memory graph camera")
 struct MemoryGraphCameraTests {
