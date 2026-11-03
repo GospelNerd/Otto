@@ -1,7 +1,10 @@
-import Combine
 import Foundation
 import OttoModels
 import OttoPersistence
+
+#if canImport(Combine)
+  import Combine
+#endif
 
 @MainActor
 public final class CanvasStore: ObservableObject {

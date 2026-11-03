@@ -1,6 +1,9 @@
-import Combine
 import Foundation
 import OttoModels
+
+#if canImport(Combine)
+  import Combine
+#endif
 
 /// Owns high-frequency camera presentation independently from the durable workspace snapshot.
 /// Gesture updates publish only this small value; callers persist the returned viewport once when
