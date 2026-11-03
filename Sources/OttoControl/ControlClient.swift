@@ -11,14 +11,6 @@ import OttoTools
 #endif
 
 public struct ControlClient: Sendable {
-  private static let requestQueue: OperationQueue = {
-    let queue = OperationQueue()
-    queue.name = "io.openotto.control.client"
-    queue.qualityOfService = .userInitiated
-    queue.maxConcurrentOperationCount = 16
-    return queue
-  }()
-
   public let socketPath: String
   public let token: String
   public let sourceNodeID: UUID?
@@ -143,7 +135,7 @@ public struct ControlClient: Sendable {
     timeoutMilliseconds: Int32? = nil
   ) async throws -> ControlResponse {
     try await withCheckedThrowingContinuation { continuation in
-      Self.requestQueue.addOperation {
+      UnixSocket.detachBlockingWork(name: "io.openotto.control.client") {
         continuation.resume(
           with: Result { try self.request(request, timeoutMilliseconds: timeoutMilliseconds) })
       }

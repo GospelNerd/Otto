@@ -161,6 +161,22 @@ enum UnixSocket {
     }
   }
 
+  /// Runs blocking socket work on a thread of its own, off the shared worker pool.
+  ///
+  /// `poll()` waits can last up to the I/O timeout. Running them on OperationQueue,
+  /// Dispatch, or the Swift concurrency pool takes a thread the server needs to answer.
+  /// On Linux that pool is sized to about the CPU count and grows only about one thread per
+  /// second, so a burst of waiting clients starves the server until requests time out.
+  static func detachBlockingWork(
+    name: String,
+    _ work: @escaping @Sendable () -> Void
+  ) {
+    let thread = Thread(block: work)
+    thread.name = name
+    thread.qualityOfService = .userInitiated
+    thread.start()
+  }
+
   static func socketError() -> ControlProtocolError {
     ControlProtocolError.socket(String(cString: strerror(errno)))
   }

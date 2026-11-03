@@ -17,7 +17,6 @@ public final class ControlServer: @unchecked Sendable {
   private let authenticator: ControlAuthenticator
   private let listener: Int32
   private let source: DispatchSourceRead
-  private let connectionQueue: OperationQueue
   private let stateLock = NSLock()
   private var stopped = false
 
@@ -29,12 +28,6 @@ public final class ControlServer: @unchecked Sendable {
     self.socketPath = socketPath
     self.registry = registry
     self.authenticator = authenticator
-    let connectionQueue = OperationQueue()
-    connectionQueue.name = "io.openotto.control.connections"
-    connectionQueue.qualityOfService = .userInitiated
-    connectionQueue.maxConcurrentOperationCount = 16
-    self.connectionQueue = connectionQueue
-
     let directory = URL(fileURLWithPath: socketPath).deletingLastPathComponent()
     try FileManager.default.createDirectory(
       at: directory,
@@ -92,7 +85,9 @@ public final class ControlServer: @unchecked Sendable {
         systemClose(client)
         continue
       }
-      connectionQueue.addOperation { [weak self] in
+      // Reading the request can wait up to the I/O timeout, so it gets its own thread.
+      // Request handling then runs as a Task.
+      UnixSocket.detachBlockingWork(name: "io.openotto.control.connection") { [weak self] in
         self?.readAndHandle(client)
       }
     }
