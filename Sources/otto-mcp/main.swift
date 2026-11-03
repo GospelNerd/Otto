@@ -44,7 +44,13 @@ struct OttoMCPCommand {
       },
       write: { response in
         print(response)
-        fflush(stdout)
+        #if os(Linux)
+          // Glibc declares `stdout` as a mutable global, which Swift 6 rejects in this
+          // concurrent closure. fflush(nil) flushes every output stream, stdout included.
+          fflush(nil)
+        #else
+          fflush(stdout)
+        #endif
       }
     )
     while let line = readLine() {
