@@ -269,9 +269,17 @@ private struct InstanceFixture {
 }
 
 private func builtExecutableURL(named name: String) throws -> URL {
+  #if canImport(Darwin)
+    let bundleOrigins =
+      Bundle.allBundles.compactMap(\.executableURL)
+      + Bundle.allFrameworks.compactMap(\.executableURL)
+  #else
+    // Bundle.allBundles can crash in swift-corelibs-foundation when tests run in parallel
+    // (seen with Swift 6.2.4); the running test binary is enough to find the build directory.
+    let bundleOrigins = [URL(fileURLWithPath: "/proc/self/exe").resolvingSymlinksInPath()]
+  #endif
   let origins =
-    Bundle.allBundles.compactMap(\.executableURL)
-    + Bundle.allFrameworks.compactMap(\.executableURL)
+    bundleOrigins
     + CommandLine.arguments
     .filter { $0.hasPrefix("/") }
     .map { URL(fileURLWithPath: $0) }
