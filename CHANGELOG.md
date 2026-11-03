@@ -4,6 +4,12 @@ All notable changes to Otto (called Muse before 0.2.0) are documented here. Each
 published verbatim as the in-app update notes and on the download site, so write for users:
 lead with what they can now do, not how it was implemented.
 
+## Unreleased
+
+### Fixed
+
+- **Agent tool calls no longer stall when many arrive at once.** Otto's control socket, which every agent, `ottoctl` and `otto-mcp` call goes through, waited for replies on a small shared thread pool. A burst of calls could hold every thread until the calls timed out after 10 seconds. Each call and each incoming connection now waits on its own thread. The control socket also builds on Linux. Thanks to Justin Philip Flores (GospelNerd) for PR #50.
+
 ## 0.2.14 — 2026-11-02
 
 ### New

@@ -1,17 +1,16 @@
-import Darwin
 import Dispatch
 import Foundation
 import OttoTools
 
-public struct ControlClient: Sendable {
-  private static let requestQueue: OperationQueue = {
-    let queue = OperationQueue()
-    queue.name = "io.openotto.control.client"
-    queue.qualityOfService = .userInitiated
-    queue.maxConcurrentOperationCount = 16
-    return queue
-  }()
+#if canImport(Darwin)
+  import Darwin
+#elseif canImport(Glibc)
+  import Glibc
+#elseif canImport(Musl)
+  import Musl
+#endif
 
+public struct ControlClient: Sendable {
   public let socketPath: String
   public let token: String
   public let sourceNodeID: UUID?
@@ -118,7 +117,7 @@ public struct ControlClient: Sendable {
     timeoutMilliseconds: Int32? = nil
   ) throws -> ControlResponse {
     let descriptor = try UnixSocket.create()
-    defer { Darwin.close(descriptor) }
+    defer { systemClose(descriptor) }
     try UnixSocket.connect(descriptor, path: socketPath)
     try UnixSocket.setNonBlocking(descriptor)
     try UnixSocket.writeMessage(request, to: descriptor)
@@ -136,7 +135,7 @@ public struct ControlClient: Sendable {
     timeoutMilliseconds: Int32? = nil
   ) async throws -> ControlResponse {
     try await withCheckedThrowingContinuation { continuation in
-      Self.requestQueue.addOperation {
+      UnixSocket.detachBlockingWork(name: "io.openotto.control.client") {
         continuation.resume(
           with: Result { try self.request(request, timeoutMilliseconds: timeoutMilliseconds) })
       }

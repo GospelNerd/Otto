@@ -1,5 +1,12 @@
-import Darwin
 import Foundation
+
+#if canImport(Darwin)
+  import Darwin
+#elseif canImport(Glibc)
+  import Glibc
+#elseif canImport(Musl)
+  import Musl
+#endif
 
 enum UnixSocket {
   static let messageLimit = 1_048_576
@@ -7,26 +14,38 @@ enum UnixSocket {
   static let clientResponseTimeoutMilliseconds: Int32 = 10_000
 
   static func create() throws -> Int32 {
-    let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    #if os(Linux)
+      #if canImport(Glibc)
+        let socketType = Int32(SOCK_STREAM.rawValue)
+      #else
+        let socketType = SOCK_STREAM
+      #endif
+      let descriptor = socket(AF_UNIX, socketType, 0)
+    #else
+      let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    #endif
     guard descriptor >= 0 else { throw socketError() }
-    var noSignal: Int32 = 1
-    guard
-      setsockopt(
-        descriptor,
-        SOL_SOCKET,
-        SO_NOSIGPIPE,
-        &noSignal,
-        socklen_t(MemoryLayout<Int32>.size)
-      ) == 0
-    else {
-      let error = socketError()
-      Darwin.close(descriptor)
-      throw error
-    }
+    // Linux has no SO_NOSIGPIPE; writes use send(MSG_NOSIGNAL) instead (see systemWrite).
+    #if !os(Linux)
+      var noSignal: Int32 = 1
+      guard
+        setsockopt(
+          descriptor,
+          SOL_SOCKET,
+          SO_NOSIGPIPE,
+          &noSignal,
+          socklen_t(MemoryLayout<Int32>.size)
+        ) == 0
+      else {
+        let error = socketError()
+        systemClose(descriptor)
+        throw error
+      }
+    #endif
     do {
       try setCloseOnExec(descriptor)
     } catch {
-      Darwin.close(descriptor)
+      systemClose(descriptor)
       throw error
     }
     return descriptor
@@ -53,7 +72,7 @@ enum UnixSocket {
     var address = try address(for: path)
     let result = withUnsafePointer(to: &address) { pointer in
       pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
-        Darwin.bind(descriptor, socketAddress, socklen_t(MemoryLayout<sockaddr_un>.size))
+        systemBind(descriptor, socketAddress, socklen_t(MemoryLayout<sockaddr_un>.size))
       }
     }
     guard result == 0 else { throw socketError() }
@@ -63,7 +82,7 @@ enum UnixSocket {
     var address = try address(for: path)
     let result = withUnsafePointer(to: &address) { pointer in
       pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
-        Darwin.connect(descriptor, socketAddress, socklen_t(MemoryLayout<sockaddr_un>.size))
+        systemConnect(descriptor, socketAddress, socklen_t(MemoryLayout<sockaddr_un>.size))
       }
     }
     guard result == 0 else { throw socketError() }
@@ -91,7 +110,7 @@ enum UnixSocket {
       var remaining = buffer.count
       var offset = 0
       while remaining > 0 {
-        let written = Darwin.write(descriptor, base.advanced(by: offset), remaining)
+        let written = systemWrite(descriptor, base.advanced(by: offset), remaining)
         if written < 0 {
           if errno == EINTR { continue }
           if errno == EAGAIN || errno == EWOULDBLOCK {
@@ -114,7 +133,7 @@ enum UnixSocket {
     var data = Data()
     var bytes = [UInt8](repeating: 0, count: 8_192)
     while data.count <= messageLimit {
-      let count = Darwin.read(descriptor, &bytes, bytes.count)
+      let count = systemRead(descriptor, &bytes, bytes.count)
       if count < 0 {
         if errno == EINTR { continue }
         if errno == EAGAIN || errno == EWOULDBLOCK {
@@ -142,6 +161,22 @@ enum UnixSocket {
     }
   }
 
+  /// Runs blocking socket work on a thread of its own, off the shared worker pool.
+  ///
+  /// `poll()` waits can last up to the I/O timeout. Running them on OperationQueue,
+  /// Dispatch, or the Swift concurrency pool takes a thread the server needs to answer.
+  /// On Linux that pool is sized to about the CPU count and grows only about one thread per
+  /// second, so a burst of waiting clients starves the server until requests time out.
+  static func detachBlockingWork(
+    name: String,
+    _ work: @escaping @Sendable () -> Void
+  ) {
+    let thread = Thread(block: work)
+    thread.name = name
+    thread.qualityOfService = .userInitiated
+    thread.start()
+  }
+
   static func socketError() -> ControlProtocolError {
     ControlProtocolError.socket(String(cString: strerror(errno)))
   }
@@ -162,6 +197,80 @@ enum UnixSocket {
       throw socketError()
     }
   }
+}
+
+// Platform-neutral POSIX wrappers. Darwin keeps its module-qualified calls unchanged; Linux uses
+// the Glibc/Musl globals. Mirrors the helpers in OttoRemote/RemoteSocketTransport.swift.
+func systemClose(_ descriptor: Int32) {
+  #if os(Linux)
+    _ = close(descriptor)
+  #else
+    _ = Darwin.close(descriptor)
+  #endif
+}
+
+func systemListen(_ descriptor: Int32, _ backlog: Int32) -> Int32 {
+  #if os(Linux)
+    listen(descriptor, backlog)
+  #else
+    Darwin.listen(descriptor, backlog)
+  #endif
+}
+
+func systemAccept(_ descriptor: Int32) -> Int32 {
+  #if os(Linux)
+    accept(descriptor, nil, nil)
+  #else
+    Darwin.accept(descriptor, nil, nil)
+  #endif
+}
+
+private func systemBind(
+  _ descriptor: Int32,
+  _ address: UnsafePointer<sockaddr>,
+  _ length: socklen_t
+) -> Int32 {
+  #if os(Linux)
+    bind(descriptor, address, length)
+  #else
+    Darwin.bind(descriptor, address, length)
+  #endif
+}
+
+private func systemConnect(
+  _ descriptor: Int32,
+  _ address: UnsafePointer<sockaddr>,
+  _ length: socklen_t
+) -> Int32 {
+  #if os(Linux)
+    connect(descriptor, address, length)
+  #else
+    Darwin.connect(descriptor, address, length)
+  #endif
+}
+
+private func systemWrite(
+  _ descriptor: Int32,
+  _ buffer: UnsafeRawPointer,
+  _ count: Int
+) -> Int {
+  #if os(Linux)
+    send(descriptor, buffer, count, Int32(MSG_NOSIGNAL))
+  #else
+    Darwin.write(descriptor, buffer, count)
+  #endif
+}
+
+private func systemRead(
+  _ descriptor: Int32,
+  _ buffer: UnsafeMutableRawPointer,
+  _ count: Int
+) -> Int {
+  #if os(Linux)
+    read(descriptor, buffer, count)
+  #else
+    Darwin.read(descriptor, buffer, count)
+  #endif
 }
 
 extension JSONEncoder {

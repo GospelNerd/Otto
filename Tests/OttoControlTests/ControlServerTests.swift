@@ -215,6 +215,42 @@ struct ControlServerTests {
     #expect(counts.count == 100)
     #expect(counts.allSatisfy { $0 == 1 })
   }
+
+  @Test("A request burst wider than the shared worker pool completes promptly")
+  func burstDoesNotStarveServer() async throws {
+    // Regression test for thread starvation. Blocking socket waits used to run on capped
+    // OperationQueues. Linux libdispatch sizes its worker pool to about the CPU count and adds
+    // roughly one thread per second when they block, so a burst of waiting clients left the
+    // server with no thread to answer them. Each call has a short deadline, so starvation shows
+    // up as a timeout instead of a slow pass.
+    let fixture = try await ControlFixture()
+    defer {
+      fixture.server.stop()
+      try? FileManager.default.removeItem(at: fixture.directory)
+    }
+    let client = fixture.client
+    let burst = max(48, ProcessInfo.processInfo.activeProcessorCount * 4)
+    let clock = ContinuousClock()
+    let start = clock.now
+    let messages = try await withThrowingTaskGroup(of: String.self, returning: [String].self) {
+      group in
+      for index in 0..<burst {
+        group.addTask {
+          try await client.callAsync(
+            "test.greet",
+            arguments: .object(["name": .string("burst-\(index)")]),
+            timeoutMilliseconds: 3_000
+          ).decode(GreetingOutput.self).message
+        }
+      }
+      var values: [String] = []
+      for try await value in group { values.append(value) }
+      return values
+    }
+    #expect(messages.count == burst)
+    #expect(Set(messages).count == burst)
+    #expect(clock.now - start < .seconds(5))
+  }
 }
 
 private struct InstanceOutput: Codable, Sendable, Equatable { let instance: String }
@@ -269,9 +305,17 @@ private struct InstanceFixture {
 }
 
 private func builtExecutableURL(named name: String) throws -> URL {
+  #if canImport(Darwin)
+    let bundleOrigins =
+      Bundle.allBundles.compactMap(\.executableURL)
+      + Bundle.allFrameworks.compactMap(\.executableURL)
+  #else
+    // Bundle.allBundles can crash in swift-corelibs-foundation when tests run in parallel
+    // (seen with Swift 6.2.4); the running test binary is enough to find the build directory.
+    let bundleOrigins = [URL(fileURLWithPath: "/proc/self/exe").resolvingSymlinksInPath()]
+  #endif
   let origins =
-    Bundle.allBundles.compactMap(\.executableURL)
-    + Bundle.allFrameworks.compactMap(\.executableURL)
+    bundleOrigins
     + CommandLine.arguments
     .filter { $0.hasPrefix("/") }
     .map { URL(fileURLWithPath: $0) }
