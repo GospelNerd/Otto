@@ -82,6 +82,22 @@ struct CompactMemoryAndBootstrapTests {
     #expect(third.contentHash != first.contentHash)
   }
 
+  @Test("Bootstrap content hashes are hex SHA-256 digests")
+  func bootstrapHashIsSHA256() {
+    let packet = AgentMemoryBootstrap(
+      charter: AgentCharter(layers: [AgentCharter.ottoSafetyLayer]),
+      personalEntries: [],
+      operatingEntries: [],
+      project: "fixture",
+      brainPath: "/tmp/brain",
+      permissionSummary: "read-only (plan mode)",
+      curationNudge: nil
+    )
+    // 64 lowercase hex digits; the FNV-1a fallback would give 16.
+    #expect(packet.contentHash.count == 64)
+    #expect(packet.contentHash.allSatisfy { "0123456789abcdef".contains($0) })
+  }
+
   @Test("The canvas roster names peers as agents, never contacts")
   func peerRoster() async throws {
     let personal = makeStore(budget: .personal)

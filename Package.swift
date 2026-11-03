@@ -71,7 +71,11 @@ let package = Package(
     ),
     .target(
       name: "OttoMemory",
-      dependencies: [.target(name: "CSQLite", condition: .when(platforms: [.linux]))],
+      dependencies: [
+        .target(name: "CSQLite", condition: .when(platforms: [.linux])),
+        // Apple platforms use CryptoKit; swift-crypto gives Linux the same SHA-256.
+        .product(name: "Crypto", package: "swift-crypto", condition: .when(platforms: [.linux])),
+      ],
       linkerSettings: [.linkedLibrary("sqlite3")]
     ),
     .target(
