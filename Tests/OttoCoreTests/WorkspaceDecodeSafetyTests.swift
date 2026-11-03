@@ -2,8 +2,13 @@ import Foundation
 import OttoCore
 import OttoModels
 import OttoPersistence
-import SQLite3
 import Testing
+
+#if canImport(SQLite3)
+  import SQLite3
+#else
+  import CSQLite
+#endif
 
 /// On 19 Oct 2026 Otto Dev saved a Chat destination the release build did not know. The release
 /// build could not decode the snapshot, started from the empty starter workspace, and its next
