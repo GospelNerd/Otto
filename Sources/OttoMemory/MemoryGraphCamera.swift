@@ -1,5 +1,9 @@
-import CoreGraphics
 import Foundation
+
+// On Linux, swift-corelibs-foundation provides CGFloat, CGPoint, CGSize and CGRect.
+#if canImport(CoreGraphics)
+  import CoreGraphics
+#endif
 
 /// Transient graph camera. Zoom preserves the world point under the pointer, including at limits.
 public struct MemoryGraphCamera: Equatable, Sendable {
