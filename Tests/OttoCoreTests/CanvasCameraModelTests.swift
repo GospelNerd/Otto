@@ -1,41 +1,47 @@
-import Combine
 import Foundation
 import OttoCore
 import OttoModels
 import OttoPersistence
 import Testing
 
+#if canImport(Combine)
+  import Combine
+#endif
+
 @MainActor
 @Suite("Canvas camera presentation")
 struct CanvasCameraModelTests {
-  @Test("Live pan and zoom never republish durable workspace state")
-  func liveGestureIsolation() {
-    let canvas = OttoCanvas(name: "Camera")
-    let store = CanvasStore(
-      snapshot: WorkspaceSnapshot(canvases: [canvas], activeCanvasID: canvas.id)
-    )
-    let camera = CanvasCameraModel(canvasID: canvas.id, viewport: canvas.viewport)
-    var workspacePublications = 0
-    var cameraPublications = 0
-    let workspaceObservation = store.objectWillChange.sink { workspacePublications += 1 }
-    let cameraObservation = camera.objectWillChange.sink { cameraPublications += 1 }
+  // objectWillChange publishers come from Combine; without it the stand-ins publish nothing.
+  #if canImport(Combine)
+    @Test("Live pan and zoom never republish durable workspace state")
+    func liveGestureIsolation() {
+      let canvas = OttoCanvas(name: "Camera")
+      let store = CanvasStore(
+        snapshot: WorkspaceSnapshot(canvases: [canvas], activeCanvasID: canvas.id)
+      )
+      let camera = CanvasCameraModel(canvasID: canvas.id, viewport: canvas.viewport)
+      var workspacePublications = 0
+      var cameraPublications = 0
+      let workspaceObservation = store.objectWillChange.sink { workspacePublications += 1 }
+      let cameraObservation = camera.objectWillChange.sink { cameraPublications += 1 }
 
-    for step in 1...120 {
-      camera.updatePan(x: Double(step), y: Double(-step))
-      camera.updateZoom(magnification: 1 + Double(step) / 1_000)
+      for step in 1...120 {
+        camera.updatePan(x: Double(step), y: Double(-step))
+        camera.updateZoom(magnification: 1 + Double(step) / 1_000)
+      }
+
+      #expect(workspacePublications == 0)
+      #expect(cameraPublications > 0)
+      #expect(store.activeCanvas == canvas)
+
+      let settled = camera.endPan(x: 120, y: -120)
+      store.dispatch(.setViewport(settled))
+      #expect(workspacePublications > 0)
+      #expect(store.activeCanvas.viewport == settled)
+
+      withExtendedLifetime((workspaceObservation, cameraObservation)) {}
     }
-
-    #expect(workspacePublications == 0)
-    #expect(cameraPublications > 0)
-    #expect(store.activeCanvas == canvas)
-
-    let settled = camera.endPan(x: 120, y: -120)
-    store.dispatch(.setViewport(settled))
-    #expect(workspacePublications > 0)
-    #expect(store.activeCanvas.viewport == settled)
-
-    withExtendedLifetime((workspaceObservation, cameraObservation)) {}
-  }
+  #endif
 
   @Test("Camera switches canvases and accepts external settled viewport changes")
   func synchronization() {

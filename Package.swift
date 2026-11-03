@@ -255,7 +255,11 @@ let package = Package(
       ]
     ),
     .testTarget(
-      name: "OttoCoreTests", dependencies: ["OttoCore", "OttoModels", "OttoPersistence"]),
+      name: "OttoCoreTests",
+      dependencies: [
+        "OttoCore", "OttoModels", "OttoPersistence",
+        .target(name: "CSQLite", condition: .when(platforms: [.linux])),
+      ]),
     .testTarget(
       name: "OttoMemoryTests",
       dependencies: ["OttoMemory", .target(name: "CSQLite", condition: .when(platforms: [.linux]))]
