@@ -2,6 +2,8 @@ import Foundation
 
 #if canImport(CryptoKit)
   import CryptoKit
+#elseif canImport(Crypto)
+  import Crypto
 #endif
 
 /// Ordered charter layers. Precedence is fixed: lower layers may specialise higher layers but
@@ -279,11 +281,12 @@ public struct AgentMemoryBootstrap: Codable, Equatable, Sendable {
   }
 
   static func hash(_ text: String) -> String {
-    #if canImport(CryptoKit)
+    #if canImport(CryptoKit) || canImport(Crypto)
+      // swift-crypto's SHA256 matches CryptoKit's, so the hash is the same on every host.
       let digest = SHA256.hash(data: Data(text.utf8))
       return digest.map { String(format: "%02x", $0) }.joined()
     #else
-      // FNV-1a 64-bit fallback where CryptoKit is unavailable; correlation, not cryptography.
+      // FNV-1a 64-bit fallback where no SHA-256 is available; correlation, not cryptography.
       var hash: UInt64 = 0xcbf2_9ce4_8422_2325
       for byte in text.utf8 {
         hash ^= UInt64(byte)

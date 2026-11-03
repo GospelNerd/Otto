@@ -1,6 +1,7 @@
 import Foundation
-import OttoMemory
 import Testing
+
+@testable import OttoMemory
 
 @Suite("Compact memory and agent bootstrap")
 struct CompactMemoryAndBootstrapTests {
@@ -80,6 +81,14 @@ struct CompactMemoryAndBootstrapTests {
     let third = await builder.build(
       personal: personal, operating: operating, permissionSummary: "workspace write")
     #expect(third.contentHash != first.contentHash)
+  }
+
+  @Test("Bootstrap content hashes use SHA-256")
+  func bootstrapHashIsSHA256() {
+    // Known SHA-256 of "abc"; the FNV-1a fallback would not produce this digest.
+    #expect(
+      AgentMemoryBootstrap.hash("abc")
+        == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
   }
 
   @Test("The canvas roster names peers as agents, never contacts")
