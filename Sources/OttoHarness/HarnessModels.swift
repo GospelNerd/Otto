@@ -43,6 +43,8 @@ public struct HarnessSession: Codable, Equatable, Sendable {
   public var messages: [HarnessMessage]
   public var archivedMessages: [HarnessMessage]?
   public var toolReceipts: [HarnessToolReceipt]?
+  /// Summary of messages folded out of `messages` to fit the model's context window.
+  public var compaction: HarnessCompaction?
 
   public init(
     id: String = HarnessSession.makeID(),
@@ -172,6 +174,10 @@ public protocol HarnessToolExecutor: Sendable {
 public enum HarnessEvent: Equatable, Sendable {
   case sessionStarted(String)
   case toolStarted(name: String)
+  /// Older messages were summarised so the conversation fits `contextWindow` tokens.
+  case compacted(foldedMessages: Int, contextWindow: Int)
+  /// The provider rejected a prompt of about `promptTokens` as too long for the model.
+  case contextOverflow(promptTokens: Int)
 }
 
 public struct HarnessTurnResult: Equatable, Sendable {

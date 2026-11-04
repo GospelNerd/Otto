@@ -167,6 +167,11 @@ private enum OttoOpenAIAgent {
     let legacyOpenAIResponseID =
       backend.providerID == "openai" && !isOttoSession
       ? options.resumeID : nil
+    // Size compaction to the model actually picked: its provider listing first, then Otto's table.
+    let windowResolver = HarnessContextWindowResolver()
+    let contextWindow = await windowResolver.resolve(
+      providerID: backend.providerID, modelID: options.model,
+      modelsURL: modelsURL(backendID: options.backend), apiKey: apiKey)
     let request = HarnessTurnRequest(
       sessionID: isOttoSession ? options.resumeID : nil,
       legacyProviderResponseID: legacyOpenAIResponseID,
@@ -175,7 +180,8 @@ private enum OttoOpenAIAgent {
       reasoningEffort: options.effort,
       systemInstructions: options.system,
       prompt: options.prompt,
-      tools: tools)
+      tools: tools,
+      contextWindow: contextWindow.tokens)
     let runner = HarnessRunner(sessionStore: HarnessSessionStore())
     let result = try await runner.run(
       request,
@@ -193,6 +199,19 @@ private enum OttoOpenAIAgent {
               "type": "mcp_tool_call", "server": "otto", "tool": nameMap[name] ?? name,
             ],
           ])
+        case .compacted(let folded, let window):
+          emit([
+            "type": "item.completed",
+            "item": [
+              "type": "reasoning",
+              "text":
+                "Compacted \(folded) earlier messages into a summary to stay within "
+                + "\(options.model)'s \(formattedTokens(window))-token context window.",
+            ],
+          ])
+        case .contextOverflow(let promptTokens):
+          windowResolver.learnOverflow(
+            providerID: backend.providerID, modelID: options.model, promptTokens: promptTokens)
         }
       })
     emit(["type": "item.completed", "item": ["type": "agent_message", "text": result.text]])
@@ -235,6 +254,26 @@ private enum OttoOpenAIAgent {
         apiKey: apiKey, providerID: id, providerDisplayName: vendor.displayName,
         endpoint: vendor.chatCompletionsURL)
     }
+  }
+
+  /// Listings that report context sizes. OpenAI and xAI listings do not, so their windows come
+  /// from Otto's table.
+  private static func modelsURL(backendID: String) -> URL? {
+    switch backendID {
+    case "openai", "xai": return nil
+    case "anthropic": return URL(string: "https://api.anthropic.com/v1/models?limit=1000")
+    case "local":
+      return OttoEnvironment.value("MODEL_BASE_URL").flatMap {
+        try? LocalModelConfiguration(baseURL: $0, modelID: "local-model").modelsURL
+      }
+    default: return OttoHarnessCompatibleVendor(rawValue: backendID)?.modelsURL
+    }
+  }
+
+  private static func formattedTokens(_ tokens: Int) -> String {
+    tokens >= 1_000_000
+      ? String(format: "%gM", (Double(tokens) / 100_000).rounded() / 10)
+      : "\(Int((Double(tokens) / 1_000).rounded()))k"
   }
 
   private static func providerDisplayName(_ id: String) -> String {

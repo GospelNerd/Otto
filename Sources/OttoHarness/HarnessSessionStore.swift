@@ -6,7 +6,9 @@ public actor HarnessSessionStore {
     public var maximumMessages: Int
     public var maximumUTF8Bytes: Int
 
-    public init(maximumMessages: Int = 100, maximumUTF8Bytes: Int = 256 * 1_024) {
+    /// A safety net only. HarnessCompactor sizes live history to the model's context window and
+    /// folds older messages into a summary well before these limits.
+    public init(maximumMessages: Int = 1_000, maximumUTF8Bytes: Int = 8 * 1_024 * 1_024) {
       self.maximumMessages = max(2, maximumMessages)
       self.maximumUTF8Bytes = max(1_024, maximumUTF8Bytes)
     }
@@ -116,6 +118,26 @@ public actor HarnessSessionStore {
   }
 
   public func contextSummary(_ session: HarnessSession) -> String {
+    let uncertain = (session.toolReceipts ?? []).filter {
+      $0.state == "executing" || $0.state == "uncertain"
+    }.map {
+      "Uncertain tool: \($0.name), call \($0.callID). Verify its external result before repeating it."
+    }
+    if let compaction = session.compaction {
+      return (uncertain + [
+        "Summary of the earlier conversation (older messages were compacted to fit the model's context window):\n"
+          + compaction.summary
+      ]).joined(separator: "\n")
+    }
+    return String((uncertain + legacyArchiveLines(session)).joined(separator: "\n").prefix(8_000))
+  }
+
+  /// Sessions saved before compaction existed only kept a digest of their archive.
+  public func legacyArchiveDigest(_ session: HarnessSession) -> String {
+    String(legacyArchiveLines(session).joined(separator: "\n").prefix(8_000))
+  }
+
+  private func legacyArchiveLines(_ session: HarnessSession) -> [String] {
     let archive = session.archivedMessages ?? []
     let constraints = archive.filter { message in
       message.role == .user
@@ -125,15 +147,9 @@ public actor HarnessSessionStore {
     }
     let candidates = constraints + Array(archive.suffix(6))
     var seen = Set<UUID>()
-    let lines = candidates.filter { seen.insert($0.id).inserted }.map {
+    return candidates.filter { seen.insert($0.id).inserted }.map {
       "\($0.role.rawValue): \(String($0.content.prefix(1_000)))"
     }
-    let uncertain = (session.toolReceipts ?? []).filter {
-      $0.state == "executing" || $0.state == "uncertain"
-    }.map {
-      "Uncertain tool: \($0.name), call \($0.callID). Verify its external result before repeating it."
-    }
-    return String((uncertain + lines).joined(separator: "\n").prefix(8_000))
   }
 
   private func encoder() -> JSONEncoder {

@@ -8,6 +8,7 @@ lead with what they can now do, not how it was implemented.
 
 ### New
 
+- **Long Otto Harness chats compact themselves to fit the model you picked.** When a session or bot chat reaches about 60% of the model's context window, Otto summarises the older messages and carries on from that summary plus the recent ones, so long chats stop growing more expensive with every message. The window comes from the provider's own model list where it has one (Anthropic, OpenRouter, Groq, Mistral, Moonshot, LM Studio, vLLM), so a 32k local model compacts early and a 1M-token Claude model compacts late. If a provider still rejects a message as too long, Otto compacts and retries once and remembers the smaller limit. The chat shows a note when this happens (issue #45).
 - **Skills: one library every bot, team and session can use.** Chat → Skills shows every skill on your Mac in one list: Otto's own, plus the ones Claude Code, Claude plugins, Codex, Hermes and OpenCode already have, with where each lives and how often it was used. Turn on **All agents** for any of them, or write a new one, and every bot, team and session can use it whichever harness it runs on; narrow it to particular bots if you like. Agents see a one-line list of their skills and load a skill's full instructions only when a task needs it, so a big library costs few tokens (issue #43).
 
 ### Fixed
