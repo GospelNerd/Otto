@@ -47,6 +47,8 @@ struct HomeReviewCard: View {
   let services: ApplicationServices
   let openAgent: (UUID) -> Void
   let report: (OttoStatusToast) -> Void
+  /// Home marks cards waiting on the person with a thin accent edge; Activity does not.
+  var accentEdge = true
   @Environment(\.ottoPalette) private var palette
   @State private var commenting = false
   @State private var comment = ""
@@ -81,8 +83,10 @@ struct HomeReviewCard: View {
     .ottoGlass(cornerRadius: 12)
     .overlay(alignment: .leading) {
       // A thin accent edge marks it as waiting on the person, not just information.
-      RoundedRectangle(cornerRadius: 2).fill(palette.signal.opacity(0.85))
-        .frame(width: 3).padding(.vertical, 16)
+      if accentEdge {
+        RoundedRectangle(cornerRadius: 2).fill(palette.signal.opacity(0.85))
+          .frame(width: 3).padding(.vertical, 16)
+      }
     }
     .foregroundStyle(palette.paper)
     .accessibilityIdentifier("home.review.\(review.id.uuidString)")
@@ -293,6 +297,7 @@ struct HomeReviewActionCard: View {
   let review: HomeReview
   let services: ApplicationServices
   let openAgent: (UUID) -> Void
+  var accentEdge = true
   @Environment(\.ottoPalette) private var palette
   @State private var answering = false
 
@@ -345,7 +350,7 @@ struct HomeReviewActionCard: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .ottoGlass(cornerRadius: 12)
     .overlay(alignment: .leading) {
-      if waitingForPermission {
+      if accentEdge && waitingForPermission {
         RoundedRectangle(cornerRadius: 2).fill(palette.signal.opacity(0.85))
           .frame(width: 3).padding(.vertical, 16)
       }

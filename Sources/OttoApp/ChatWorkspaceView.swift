@@ -172,8 +172,6 @@ struct ChatWorkspaceView: View {
   @State private var pendingClear: ClearChatTarget?
   @State private var editingBot: AgentProfile?
   @State private var editingTeam: BotChannel?
-  @State private var activitySearchQuery = ""
-  @State private var activitySearchResults: [BotSearchResult] = []
   @State private var sidebarQuery = ""
   @State private var collapsedGroups: Set<SidebarGroup> = []
   @State private var hoveredSidebarGroup: SidebarGroup?
@@ -705,7 +703,10 @@ struct ChatWorkspaceView: View {
     ) {
       VStack(spacing: 1) {
         destinationRow(
-          .activity, symbol: "tray", count: services.botActivity.active.count)
+          .activity, symbol: "tray",
+          count: ActivityNeedsYou(
+            services: services, activity: services.botActivity, reviews: services.homeReviews
+          ).count)
         destinationRow(
           .routines, symbol: "clock", count: services.routines.routines.count)
         destinationRow(
@@ -1490,101 +1491,14 @@ struct ChatWorkspaceView: View {
   }
 
   private var activityInbox: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      HStack {
-        VStack(alignment: .leading, spacing: 3) {
-          Text("Activity")
-            .font(.ottoDisplay(24).weight(.semibold))
-          Text("Work, results, failures, and anything that needs you")
-            .font(.ottoDisplay(12))
-            .foregroundStyle(palette.muted)
-        }
-        Spacer()
-        Text("\(services.botActivity.needsUser.count) NEEDS YOU")
-          .font(.ottoMono(7, weight: .black))
-          .foregroundStyle(palette.cyan)
-      }
-      .padding(24)
-
-      TextField(
-        "Search bots, rooms, messages, artifacts, routines, and memory", text: $activitySearchQuery
-      )
-      .textFieldStyle(.plain)
-      .font(.ottoDisplay(13))
-      .padding(.horizontal, 12)
-      .frame(height: 38)
-      .background(palette.raised, in: RoundedRectangle(cornerRadius: 9))
-      .padding(.horizontal, 24)
-      .onChange(of: activitySearchQuery) { _, query in
-        Task { activitySearchResults = await services.searchWorkspace(query) }
-      }
-
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 8) {
-          if activitySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            ForEach(services.botActivity.items) { item in activityRow(item) }
-          } else if activitySearchResults.isEmpty {
-            ContentUnavailableView.search(text: activitySearchQuery)
-              .foregroundStyle(palette.muted)
-          } else {
-            ForEach(activitySearchResults) { result in searchResultRow(result) }
-          }
-        }
-        .padding(24)
-      }
-    }
-    .foregroundStyle(palette.paper)
-    .background(palette.workspaceSurface)
-  }
-
-  private func activityRow(_ item: BotActivityItem) -> some View {
-    Button {
-      openDeepLink(item.deepLink)
-    } label: {
-      HStack(spacing: 12) {
-        Image(systemName: activitySymbol(item.state))
-          .foregroundStyle(item.state == .needsUser ? palette.cyan : palette.paper)
-          .frame(width: 24)
-        VStack(alignment: .leading, spacing: 3) {
-          Text(item.title).font(.ottoDisplay(13).weight(.semibold))
-          Text(item.state.rawValue).font(.ottoMono(8)).foregroundStyle(palette.muted)
-        }
-        Spacer()
-        Text(item.updatedAt, style: .relative).font(.ottoMono(8)).foregroundStyle(palette.muted)
-      }
-      .padding(12)
-      .background(palette.raised, in: RoundedRectangle(cornerRadius: 10))
-    }
-    .buttonStyle(.plain)
-  }
-
-  private func searchResultRow(_ result: BotSearchResult) -> some View {
-    Button {
-      openDeepLink(result.deepLink)
-    } label: {
-      HStack(spacing: 12) {
-        Text(result.kind.rawValue.uppercased())
-          .font(.ottoMono(7, weight: .black)).foregroundStyle(palette.cyan).frame(width: 64)
-        VStack(alignment: .leading, spacing: 3) {
-          Text(result.title).font(.ottoDisplay(13).weight(.semibold))
-          Text(result.excerpt).font(.ottoDisplay(11)).foregroundStyle(palette.muted).lineLimit(2)
-        }
-        Spacer()
-      }
-      .padding(12)
-      .background(palette.raised, in: RoundedRectangle(cornerRadius: 10))
-    }
-    .buttonStyle(.plain)
-  }
-
-  private func activitySymbol(_ state: BotActivityState) -> String {
-    switch state {
-    case .working: "hourglass"
-    case .needsUser: "person.crop.circle.badge.exclamationmark"
-    case .completed: "checkmark.circle"
-    case .failed: "exclamationmark.triangle"
-    case .cancelled: "xmark.circle"
-    }
+    ActivityInboxView(
+      services: services, activity: services.botActivity, reviews: services.homeReviews,
+      agentName: { id in allAgentNodes.first { $0.id == id }?.displayName },
+      openAgent: { id in
+        if let node = allAgentNodes.first(where: { $0.id == id }) { selectSession(node) }
+      },
+      openDeepLink: openDeepLink
+    )
   }
 
   private func openDeepLink(_ link: BotActivityDeepLink) {

@@ -137,11 +137,17 @@ Sentence case everywhere except micro-labels. A global font scale (0.8–1.3) mu
 - **Place header**: a 24 pt title, a 12 pt `muted` subtitle, actions or search at the right.
 - **Card (Home)**: near-opaque `ink` at about 88% so the artwork reads through only faintly,
   radius 12, 20–24 padding, title 15 semibold, caption 12 `muted` ("Aria · 3 hours ago").
-  A 3 px `signal` bar on the leading edge when the card needs a person. Inner content such as a
-  draft sits on `raised` at 60%, radius 9. Cards in a Chat place use `raised` at 90–94% instead.
+  No coloured bar on the leading edge: Max has rejected that on new designs (4 Nov 2026), even
+  though older Home review cards still draw one. Carry the kind of a card with its micro-label
+  colour and its actions, not with stripes. Inner content such as a draft sits on `raised` at
+  60%, with a radius concentric to the card (card 12 and 16–20 padding gives 6 inside). Prefer a
+  layered shadow (1 px ring at `paper` 5%, a tight 1–2 px lift, a soft 24–28 px ambient) to a
+  flat border. Cards in a Chat place use `raised` at 90–94% instead.
 - **Status capsule**: a micro-label (`NEEDS YOU`) in `signal` inside a `signal` 35% outline capsule,
   top right of the card. Counts next to a section title are a bare `signal` micro-label.
-- **Row**: `raised` at 55%, radius 10, an 8 px status dot, name, `muted` detail, trailing link.
+- **Row**: information sits directly on the pane, separated by hairlines, not boxed: an 8 px
+  status dot, name, `muted` detail, trailing link. Only a row that needs attention (a failure
+  with an unblock action) gets its own tinted surface.
 - **Buttons**: the house style is quiet. Card actions are small `raised` pills (radius 7,
   6×12 padding) with an SF Symbol and a 12.5 pt label: `✓ Approve`, `Comment`, `Edit`, `✕ Reject`,
   all the same weight; the trailing "Open chat" is a plain `muted` text link. A `signal` fill with

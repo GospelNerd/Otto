@@ -4,6 +4,12 @@ All notable changes to Otto (called Muse before 0.2.0) are documented here. Each
 published verbatim as the in-app update notes and on the download site, so write for users:
 lead with what they can now do, not how it was implemented.
 
+## Unreleased
+
+### New
+
+- **Activity shows what needs you first.** Chat → Activity now opens with the things waiting on a person: drafts to approve, questions, permission requests and stuck agents, each with its actions in place. Under it, today's work is one line per bot or automation, failures first with the reason when there is one. Sessions interrupted by a restart fold into a single line. "Show everything" brings back the full stream, and search is unchanged.
+
 ## 0.2.16 — 2026-11-04
 
 ### New
