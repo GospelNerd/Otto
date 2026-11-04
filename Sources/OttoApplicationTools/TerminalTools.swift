@@ -227,7 +227,8 @@ public struct TerminalReadOutputTool: OttoTool {
   public init(supervisor: AgentSupervisor) { self.supervisor = supervisor }
 
   public func call(_ input: TerminalIDInput, context: ToolContext) async throws -> TerminalOutput {
-    try await terminalOutput(id: input.terminalID, supervisor: supervisor)
+    try await terminalOutput(
+      id: input.terminalID, supervisor: supervisor, consumedBy: context.sourceNodeID)
   }
 }
 
@@ -273,7 +274,8 @@ public struct TerminalWaitTool: OttoTool {
     // Capture the sequence before reading state so a completion racing with the snapshot is
     // replayed by EventWaitTool instead of being lost between two independent operations.
     var afterSequence = supervisor.eventBus.latestSequence
-    let initial = try await terminalOutput(id: input.terminalID, supervisor: supervisor)
+    let initial = try await terminalOutput(
+      id: input.terminalID, supervisor: supervisor, consumedBy: context.sourceNodeID)
     // Already waiting on the person is not news: wait for it to move on (or to ask again) so an
     // agent that waits in a loop does not spin while the person is still typing.
     if terminalHasFinished(initial) { return initial }
@@ -306,7 +308,8 @@ public struct TerminalWaitTool: OttoTool {
         break
       }
     }
-    return try await terminalOutput(id: input.terminalID, supervisor: supervisor)
+    return try await terminalOutput(
+      id: input.terminalID, supervisor: supervisor, consumedBy: context.sourceNodeID)
   }
 }
 
@@ -362,7 +365,8 @@ public struct TerminalStopProcessTool: OttoTool {
 
   public func call(_ input: TerminalIDInput, context: ToolContext) async throws -> TerminalOutput {
     try await supervisor.stop(agentID: input.terminalID)
-    return try await terminalOutput(id: input.terminalID, supervisor: supervisor)
+    return try await terminalOutput(
+      id: input.terminalID, supervisor: supervisor, consumedBy: context.sourceNodeID)
   }
 }
 
@@ -474,7 +478,15 @@ private func terminalIDSchema() -> JSONValue {
   )
 }
 
-private func terminalOutput(id: UUID, supervisor: AgentSupervisor) async throws -> TerminalOutput {
+/// `consumedBy` names the agent reading the output inside its turn. When that agent started the
+/// command and it has finished, the read counts as seeing the result, so Otto sends no separate
+/// background completion notice for it.
+private func terminalOutput(
+  id: UUID, supervisor: AgentSupervisor, consumedBy readerID: UUID? = nil
+) async throws -> TerminalOutput {
+  if readerID != nil {
+    await supervisor.markDelegatedCompletionConsumed(childID: id, by: readerID)
+  }
   let snapshot = try await supervisor.snapshot(agentID: id)
   let waiting =
     snapshot.state == .waitingUser

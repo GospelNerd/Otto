@@ -59,6 +59,29 @@ struct ProviderOutputParserTests {
     #expect(events.contains(.state(.done, confidence: 0.99)))
   }
 
+  @Test("A provider auth failure in plain prose reads as a failed run, not a prompt")
+  func providerAuthFailureProse() {
+    // Claude Code prints this and settles at its idle prompt. Answering the sign-in inside the
+    // chat never resolves it, so attention must not raise "Needs you" on top of the dead run.
+    var parser = ClaudeOutputParser()
+    let events = parser.ingest(
+      line: "Failed to authenticate: OAuth session expired and could not be refreshed")
+    #expect(
+      events == [
+        .diagnostic("Failed to authenticate: OAuth session expired and could not be refreshed"),
+        .state(.failed, confidence: 0.8),
+      ])
+
+    var codex = CodexOutputParser()
+    let codexEvents = codex.ingest(line: "Failed to authenticate: OAuth session expired")
+    #expect(codexEvents.contains(.state(.failed, confidence: 0.8)))
+    #expect(
+      codexEvents.contains { event in
+        if case .waitingForUser = event { return true }
+        return false
+      } == false)
+  }
+
   @Test("Grok messages-json is parsed through the Claude stream shape")
   func grokSuccess() throws {
     var parser = ProviderParser.forProvider(.grok)

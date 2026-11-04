@@ -98,6 +98,8 @@ public enum BriefAction: Codable, Equatable, Sendable {
   case openActivity
   case openRoutine(UUID)
   case openURL(String)
+  /// Stops a running agent; offered next to "Open" on items about an agent that looks stuck.
+  case stopAgent(UUID)
 }
 
 /// One line in the brief. Every item states why it is here; an item without a reason is noise.
@@ -116,6 +118,8 @@ public struct BriefItem: Codable, Equatable, Sendable, Identifiable {
   public var profileID: UUID?
   public var origin: BriefItemOrigin
   public var action: BriefAction?
+  /// A second thing to do from the item's menu, such as stopping an agent that looks stuck.
+  public var secondaryAction: BriefAction?
   public var createdAt: Date
   public var completedAt: Date?
 
@@ -123,8 +127,8 @@ public struct BriefItem: Codable, Equatable, Sendable, Identifiable {
     id: String = UUID().uuidString, kind: BriefItemKind, title: String, reason: String? = nil,
     source: String? = nil, people: [String] = [], time: Date? = nil, endTime: Date? = nil,
     needsYou: Bool = false, projectID: UUID? = nil, profileID: UUID? = nil,
-    origin: BriefItemOrigin, action: BriefAction? = nil, createdAt: Date = .now,
-    completedAt: Date? = nil
+    origin: BriefItemOrigin, action: BriefAction? = nil, secondaryAction: BriefAction? = nil,
+    createdAt: Date = .now, completedAt: Date? = nil
   ) {
     self.id = id
     self.kind = kind
@@ -139,13 +143,14 @@ public struct BriefItem: Codable, Equatable, Sendable, Identifiable {
     self.profileID = profileID
     self.origin = origin
     self.action = action
+    self.secondaryAction = secondaryAction
     self.createdAt = createdAt
     self.completedAt = completedAt
   }
 
   private enum CodingKeys: String, CodingKey {
     case id, kind, title, reason, source, people, time, endTime, needsYou, projectID, profileID
-    case origin, action, createdAt, completedAt
+    case origin, action, secondaryAction, createdAt, completedAt
   }
 
   public init(from decoder: Decoder) throws {
@@ -163,6 +168,7 @@ public struct BriefItem: Codable, Equatable, Sendable, Identifiable {
     profileID = try values.decodeIfPresent(UUID.self, forKey: .profileID)
     origin = try values.decode(BriefItemOrigin.self, forKey: .origin)
     action = try? values.decodeIfPresent(BriefAction.self, forKey: .action)
+    secondaryAction = try? values.decodeIfPresent(BriefAction.self, forKey: .secondaryAction)
     createdAt = try values.decode(Date.self, forKey: .createdAt)
     completedAt = try values.decodeIfPresent(Date.self, forKey: .completedAt)
   }

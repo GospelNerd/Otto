@@ -144,6 +144,16 @@ public final class ApplicationServices: ObservableObject {
   @Published public internal(set) var managedRemoteSubscriptionStatus:
     ManagedRemoteSubscriptionStatus?
   @Published public private(set) var attentionItems: [AgentAttentionItem] = []
+  /// Agents the watchdog currently flags as stuck, looping or waiting too long, by node.
+  @Published public internal(set) var watchdogFindings: [UUID: AgentWatchdogFinding] = [:]
+  /// Told about findings worth an alert (new, or persisting long enough to repeat). The app
+  /// shows them as macOS notifications.
+  public var watchdogAlertHandler: (@MainActor ([AgentWatchdogFinding]) -> Void)?
+  var agentWatchdog = AgentWatchdog()
+  var watchdogTask: Task<Void, Never>?
+  /// True between the system's will-sleep and did-wake notifications; automatic retries wait.
+  var systemIsSleeping = false
+  var systemSleepObservers: [NSObjectProtocol] = []
   @Published public private(set) var orchestrationRun: OrchestrationRun?
   /// The most recent completed turn's file changes per agent, diffed between the hidden-ref
   /// checkpoints captured at prompt send and run completion. Cleared when a new turn starts.
@@ -192,6 +202,11 @@ public final class ApplicationServices: ObservableObject {
       }
     )
   }
+
+  /// Messages an agent when `agent.spawn` or `terminal.run` work it started finishes after its
+  /// turn ended. Notices travel through `messageQueue`.
+  public lazy var completionNotifier = BackgroundCompletionNotifier(
+    supervisor: supervisor, queue: messageQueue)
 
   private func queuedAgentState(_ id: UUID) async -> AgentLifecycleState? {
     let snapshot = try? await supervisor.snapshot(agentID: id)
@@ -465,7 +480,14 @@ public final class ApplicationServices: ObservableObject {
       reviewHandler: { [weak self] routine, runID, nodeID, result, depth in
         try self?.holdRoutineResultForReview(
           routine, runID: runID, nodeID: nodeID, result: result, depth: depth)
-      }
+      },
+      failureDetailProvider: { [weak self] nodeID in
+        guard let snapshot = try? await self?.supervisor.snapshot(agentID: nodeID) else {
+          return nil
+        }
+        return ApplicationServices.routineFailureDetail(snapshot)
+      },
+      retryGate: { [weak self] _ in self?.systemIsSleeping == false }
     )
     self.appConnectionsForwarding = self.appConnections.objectWillChange.sink { [weak self] _ in
       self?.objectWillChange.send()
@@ -655,6 +677,7 @@ public final class ApplicationServices: ObservableObject {
       }
       startCardRunCleanup()
       routineEngine.start()
+      startAgentWatchdog()
       observeWebhookRoutines()
       Task { [weak self] in
         guard let self else { return }
@@ -981,6 +1004,7 @@ public final class ApplicationServices: ObservableObject {
     messaging.stop()
     telegram.stop()
     routineEngine.stop()
+    stopAgentWatchdog()
     routineObservation?.cancel()
     routineObservation = nil
     stopHookDaemon(markOffline: true)
@@ -1682,11 +1706,19 @@ public final class ApplicationServices: ObservableObject {
     )
   }
 
-  func controlSendPrompt(to target: String, prompt: String) async throws -> BotOpenOutput {
+  /// `hiddenContext`, when given, reaches the bot with this turn only and is not shown in the
+  /// chat, e.g. the channel header on a message relayed from Telegram.
+  func controlSendPrompt(
+    to target: String, prompt: String, hiddenContext: String? = nil
+  ) async throws -> BotOpenOutput {
     let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { throw ToolRegistryError.invalidInput("Bot prompt cannot be empty") }
     let opened = try await controlOpenBot(target)
-    try await sendPrompt(agentID: opened.agentID, prompt: text)
+    if let hiddenContext {
+      try await sendPrompt(agentID: opened.agentID, prompt: text, hiddenContext: hiddenContext)
+    } else {
+      try await sendPrompt(agentID: opened.agentID, prompt: text)
+    }
     return opened
   }
 
@@ -3488,6 +3520,9 @@ public final class ApplicationServices: ObservableObject {
       }
     }
     fleetStore.update(snapshot)
+    // After the fleet update: delivery code looks agents up in the fleet, so waking a parent
+    // must not delay it.
+    await completionNotifier.observe(agentID: id, state: snapshot.state)
     if !isOutputChunk {
       runHistory[id] = await supervisor.history(agentID: id)
       autoLogRunCompletion(snapshot)
@@ -3566,7 +3601,12 @@ public final class ApplicationServices: ObservableObject {
         state: snapshot.state,
         reason: snapshot.attentionReason ?? statusDetail
       )
-    case .created, .starting, .idle, .working, .interrupted, .stopped:
+    case .interrupted, .stopped:
+      // An answered question, a resolved approval, or a killed run is no longer waiting on the
+      // person. Clearing here also keeps a provider that dies after raising attention — an OAuth
+      // sign-in expiring at its idle prompt, say — from re-posting a "Needs you" entry forever.
+      acknowledgeAttention(nodeID: id)
+    case .created, .starting, .idle, .working:
       break
     }
   }
@@ -3708,7 +3748,9 @@ public final class ApplicationServices: ObservableObject {
     }
   }
 
-  private func queueAttention(
+  /// Raises a "Needs you" entry for an agent waiting on the person. Internal only as a test
+  /// seam for the attention lifecycle; runtime callers go through consumeFleetEvent.
+  func queueAttention(
     nodeID: UUID,
     canvasID: UUID,
     state: AgentLifecycleState,

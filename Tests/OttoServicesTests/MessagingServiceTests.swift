@@ -247,6 +247,42 @@ struct MessagingServiceTests {
     await services.shutdown()
   }
 
+  @Test("The phone gets the coordinator's answer as plain text")
+  func phoneAnswerIsPlainText() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(
+      path: "messaging-plain-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let services = ApplicationServices(store: CanvasStore(), workspacePath: root.path)
+    await services.start()
+    defer { services.stop() }
+    let (binding, _, sessionID, request) = try fixture(services, root: root)
+    _ = try services.botGroups.recordTurn(
+      sessionID: sessionID, profileID: binding.coordinatorID, kind: .reply,
+      text: """
+        **Ship Friday.**
+        ```mermaid
+        flowchart TD
+          A --> B
+        ```
+        | Step | Owner |
+        | --- | --- |
+        | QA | Sam |
+        <!-- otto:details -->
+        Long reasoning.
+        """)
+    let adapter = MessagingTestAdapter()
+    let messaging = MessagingService(
+      services: services, adapter: adapter, secrets: MessagingTestSecrets(),
+      url: root.appending(path: "state.json"))
+    try adapter.event(["kind": "ready"])
+    messaging.tick()
+    #expect(adapter.sent.first?.id == request.id)
+    #expect(
+      adapter.sent.first?.reply
+        == "Ship Friday.\n(diagram in Otto)\n• QA — Sam\n\n(More detail in Otto on your Mac.)")
+    await services.shutdown()
+  }
+
   @Test("Review repro: a request blocked before dispatch remains queued")
   func dispatchGateRaceKeepsQueuedRequest() async throws {
     let root = FileManager.default.temporaryDirectory.appending(

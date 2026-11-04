@@ -166,6 +166,38 @@ struct CronExpressionTests {
     #expect(next == date("2026-08-15T09:00:00Z"))
   }
 
+  @Test("A start value with a step runs to the end of the field")
+  func startValueWithStep() throws {
+    // Vixie cron reads "5/15" as "5-59/15", so the minute set is 5, 20, 35, and 50.
+    let cron = try #require(CronExpression("5/15 * * * *"))
+    let base = date("2026-08-11T00:00:00Z")
+    #expect(cron.nextFire(after: base, timeZone: utc) == date("2026-08-11T00:05:00Z"))
+    #expect(
+      cron.nextFire(after: date("2026-08-11T00:05:00Z"), timeZone: utc)
+        == date("2026-08-11T00:20:00Z"))
+    #expect(
+      cron.nextFire(after: date("2026-08-11T00:34:00Z"), timeZone: utc)
+        == date("2026-08-11T00:35:00Z"))
+    #expect(
+      cron.nextFire(after: date("2026-08-11T00:49:00Z"), timeZone: utc)
+        == date("2026-08-11T00:50:00Z"))
+    #expect(
+      cron.nextFire(after: date("2026-08-11T00:50:00Z"), timeZone: utc)
+        == date("2026-08-11T01:05:00Z"))
+    // The same rule applies to the other fields: "1/2" in the hour field is "1-23/2".
+    let hourly = try #require(CronExpression("0 1/2 * * *"))
+    #expect(hourly.nextFire(after: base, timeZone: utc) == date("2026-08-11T01:00:00Z"))
+    #expect(
+      hourly.nextFire(after: date("2026-08-11T01:00:00Z"), timeZone: utc)
+        == date("2026-08-11T03:00:00Z"))
+    // A bare single value is unchanged.
+    let plain = try #require(CronExpression("5 * * * *"))
+    #expect(plain.nextFire(after: base, timeZone: utc) == date("2026-08-11T00:05:00Z"))
+    #expect(
+      plain.nextFire(after: date("2026-08-11T00:05:00Z"), timeZone: utc)
+        == date("2026-08-11T01:05:00Z"))
+  }
+
   @Test("Impossible dates return nil instead of hanging")
   func impossibleDate() throws {
     let cron = try #require(CronExpression("0 0 30 2 *"))

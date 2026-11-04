@@ -23,3 +23,11 @@
 - Commit completed work on the task branch and report the worktree path, branch, and commit SHA.
 - Report uncommitted changes explicitly. Do not silently move or copy them between worktrees.
 - Integrate task commits into `main` from the integration checkout using a reviewed merge or cherry-pick.
+
+## Design
+
+- Anything a person sees is designed before it is built. Read `DESIGN.md` (the design system) and
+  follow the `otto-design` skill in `.agents/skills/otto-design/`: design in Paper on Otto's real
+  frame and tokens, show Max on Shorelight, then write SwiftUI through `@Environment(\.ottoPalette)`.
+- Project skills live in `.agents/skills/` and are linked from `.claude/skills/`. `frontend-design`
+  applies to all UI; `components-build` and `superdesign` are for web surfaces only.

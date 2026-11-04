@@ -63,13 +63,23 @@ let package = Package(
   targets: [
     .target(name: "OttoModels"),
     .target(name: "OttoObjCSupport"),
+    // Apple SDKs ship a SQLite3 module; elsewhere the system libsqlite3 is wrapped here.
+    .systemLibrary(
+      name: "CSQLite",
+      pkgConfig: "sqlite3",
+      providers: [.apt(["libsqlite3-dev"]), .yum(["sqlite-devel"])]
+    ),
     .target(
       name: "OttoMemory",
+      dependencies: [.target(name: "CSQLite", condition: .when(platforms: [.linux]))],
       linkerSettings: [.linkedLibrary("sqlite3")]
     ),
     .target(
       name: "OttoPersistence",
-      dependencies: ["OttoModels", "OttoTools"],
+      dependencies: [
+        "OttoModels", "OttoTools",
+        .target(name: "CSQLite", condition: .when(platforms: [.linux])),
+      ],
       linkerSettings: [.linkedLibrary("sqlite3")]
     ),
     .target(
@@ -246,7 +256,10 @@ let package = Package(
     ),
     .testTarget(
       name: "OttoCoreTests", dependencies: ["OttoCore", "OttoModels", "OttoPersistence"]),
-    .testTarget(name: "OttoMemoryTests", dependencies: ["OttoMemory"]),
+    .testTarget(
+      name: "OttoMemoryTests",
+      dependencies: ["OttoMemory", .target(name: "CSQLite", condition: .when(platforms: [.linux]))]
+    ),
     .testTarget(name: "OttoModelsTests", dependencies: ["OttoModels", "OttoCore"]),
     .testTarget(
       name: "OttoPersistenceTests",

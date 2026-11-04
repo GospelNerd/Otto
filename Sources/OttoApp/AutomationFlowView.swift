@@ -474,8 +474,11 @@ extension AutomationsView {
   private func runMeta(_ run: RoutineRunRecord?, now: Date) -> String? {
     guard let run else { return nil }
     if run.outcome == .running { return Self.duration(now.timeIntervalSince(run.firedAt)) }
-    return [run.durationMs.map { Self.duration($0 / 1000) }, Self.ago(run.firedAt)]
-      .compactMap { $0 }.joined(separator: " · ")
+    return [
+      run.retryOfRunID == nil ? nil : "retry", run.durationMs.map { Self.duration($0 / 1000) },
+      Self.ago(run.firedAt),
+    ]
+    .compactMap { $0 }.joined(separator: " · ")
   }
 
   // MARK: Inspector

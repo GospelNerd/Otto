@@ -1,7 +1,12 @@
 import Foundation
 import OttoMemory
-import SQLite3
 import Testing
+
+#if canImport(SQLite3)
+  import SQLite3
+#else
+  import CSQLite
+#endif
 
 @Suite("Project Brain canonical storage")
 struct ProjectBrainStoreTests {

@@ -11,15 +11,18 @@ public struct RoutineFirePayload: Sendable, Equatable {
   /// The person approved the previous step's answer on Home. Set only by Otto, never from
   /// payload text, so the run can be told so outside the untrusted payload.
   public var approvedOnHome: Bool
+  /// Set only by the engine on its one automatic retry: the failed run being repeated.
+  public var retryOfRunID: UUID?
 
   public init(
     text: String? = nil, idempotencyKey: String? = nil, chainDepth: Int = 0,
-    approvedOnHome: Bool = false
+    approvedOnHome: Bool = false, retryOfRunID: UUID? = nil
   ) {
     self.text = text
     self.idempotencyKey = idempotencyKey
     self.chainDepth = chainDepth
     self.approvedOnHome = approvedOnHome
+    self.retryOfRunID = retryOfRunID
   }
 }
 
@@ -38,16 +41,36 @@ public final class RoutineEngine {
   /// Puts a finished answer on Home for review: routine, run, agent node, answer, flow depth.
   public typealias ReviewHandler =
     @MainActor @Sendable (Routine, UUID, UUID, String, Int) async throws -> Void
+  /// Whether a retry may start now, checked when it comes due (for example, not while the Mac
+  /// is going to sleep).
+  public typealias RetryGate = @MainActor @Sendable (Routine) -> Bool
 
   public nonisolated static let minimumIntervalSeconds = 60
   public nonisolated static let maximumPayloadBytes = 65_536
   /// How much of each answer the run history keeps for reading in Automations.
   public nonisolated static let maximumStoredResultCharacters = 8_000
+  /// How long after a transient failure the single automatic retry starts.
+  public nonisolated static let defaultRetryDelaySeconds: Double = 120
+  /// A retry that comes due this much later than planned (the Mac slept, the app was suspended)
+  /// is dropped; the next scheduled run covers it.
+  public nonisolated static let retryLatenessToleranceSeconds: Double = 60
 
   private struct ActiveRun {
     var record: RoutineRunRecord
     var started: ContinuousClock.Instant
     var chainDepth: Int
+    var payload: RoutineFirePayload
+    var ignoredEnabled: Bool
+  }
+
+  /// A failed run waiting for its one retry. Its on-failure steps are held until the retry
+  /// either runs (and reports its own outcome) or is dropped.
+  private struct PendingRetry {
+    var failedRunID: UUID
+    var payload: RoutineFirePayload
+    var failureText: String?
+    var dueAt: Date
+    var task: Task<Void, Never>
   }
 
   private let store: RoutineStore
@@ -57,10 +80,17 @@ public final class RoutineEngine {
   private let resultProvider: ResultProvider
   private let deliveryHandler: DeliveryHandler
   private let reviewHandler: ReviewHandler
+  private let failureDetailProvider: ResultProvider
+  private let retryGate: RetryGate
+  private let retryDelaySeconds: Double
+  private var pendingRetries: [UUID: PendingRetry] = [:]
   private let tickSeconds: Double
   private var tickTask: Task<Void, Never>?
   private var eventTask: Task<Void, Never>?
   private var nextRunAt: [UUID: Date] = [:]
+  /// The trigger each `nextRunAt` entry was worked out from. Editing a routine's schedule
+  /// changes its trigger, and the cached due time must then be worked out again.
+  private var scheduledTrigger: [UUID: RoutineTrigger] = [:]
   private var activeByRoutine: [UUID: ActiveRun] = [:]
   private var routinesByAgent: [UUID: Set<UUID>] = [:]
   private var queuedLatest: [UUID: RoutineFirePayload] = [:]
@@ -72,9 +102,15 @@ public final class RoutineEngine {
     readyCheck: @escaping ReadyCheck = { _ in true }, executor: @escaping Executor,
     resultProvider: @escaping ResultProvider,
     deliveryHandler: @escaping DeliveryHandler,
-    reviewHandler: @escaping ReviewHandler = { _, _, _, _, _ in }
+    reviewHandler: @escaping ReviewHandler = { _, _, _, _, _ in },
+    failureDetailProvider: @escaping ResultProvider = { _ in nil },
+    retryDelaySeconds: Double = RoutineEngine.defaultRetryDelaySeconds,
+    retryGate: @escaping RetryGate = { _ in true }
   ) {
     self.store = store
+    self.failureDetailProvider = failureDetailProvider
+    self.retryDelaySeconds = retryDelaySeconds
+    self.retryGate = retryGate
     self.eventBus = eventBus
     self.tickSeconds = tickSeconds
     self.readyCheck = readyCheck
@@ -87,6 +123,7 @@ public final class RoutineEngine {
   deinit {
     tickTask?.cancel()
     eventTask?.cancel()
+    for retry in pendingRetries.values { retry.task.cancel() }
   }
 
   public func start() {
@@ -113,7 +150,12 @@ public final class RoutineEngine {
     tickTask = nil
     eventTask?.cancel()
     eventTask = nil
+    for retry in pendingRetries.values { retry.task.cancel() }
+    pendingRetries.removeAll()
   }
+
+  /// Runs waiting for their automatic retry, keyed by routine. For tests and diagnostics.
+  public var pendingRetryRunIDs: [UUID: UUID] { pendingRetries.mapValues(\.failedRunID) }
 
   @discardableResult
   public func testRun(routineID: UUID, payload: String? = nil) async throws -> RoutineFireResult {
@@ -157,17 +199,19 @@ public final class RoutineEngine {
     advanced.lastError = nil
     _ = try store.save(advanced)
     nextRunAt[routine.id] = Self.nextScheduledFire(for: advanced, after: .now)
+    scheduledTrigger[routine.id] = advanced.trigger
 
     var record = RoutineRunRecord(
       routineID: routine.id, triggerSummary: routine.triggerSummary,
       payloadDigest: payload.text.map(Self.digest), outcome: .running,
-      collapsedMissedRuns: collapsedMissedRuns)
+      collapsedMissedRuns: collapsedMissedRuns, retryOfRunID: payload.retryOfRunID)
     let started = ContinuousClock.now
     do {
       let nodeID = try await executor(advanced, prompt)
       record.agentNodeID = nodeID
       activeByRoutine[routine.id] = ActiveRun(
-        record: record, started: started, chainDepth: payload.chainDepth)
+        record: record, started: started, chainDepth: payload.chainDepth, payload: payload,
+        ignoredEnabled: ignoreEnabled)
       routinesByAgent[nodeID, default: []].insert(routine.id)
       try store.appendRun(record)
       eventBus.publish(
@@ -183,9 +227,15 @@ public final class RoutineEngine {
       var failed = advanced
       failed.lastError = error.localizedDescription
       _ = try? store.save(failed)
-      await fireFollowers(
-        of: routine.id, outcome: .failed, result: error.localizedDescription,
-        depth: payload.chainDepth)
+      let retrying = scheduleRetryIfTransient(
+        routineID: routine.id, failedRunID: record.runID, payload: payload,
+        ignoredEnabled: ignoreEnabled, verdict: RoutineFailureClassifier.classify(error),
+        failureText: error.localizedDescription)
+      if !retrying {
+        await fireFollowers(
+          of: routine.id, outcome: .failed, result: error.localizedDescription,
+          depth: payload.chainDepth)
+      }
       throw error
     }
   }
@@ -374,6 +424,7 @@ public final class RoutineEngine {
   private func initializeScheduleState(now: Date) {
     for routine in store.routines where routine.enabled {
       guard case .schedule = routine.trigger else { continue }
+      scheduledTrigger[routine.id] = routine.trigger
       if let last = routine.lastFiredAt {
         nextRunAt[routine.id] = Self.nextScheduledFire(for: routine, after: last)
       } else {
@@ -382,9 +433,14 @@ public final class RoutineEngine {
     }
   }
 
-  private func tick(now: Date) async {
+  func tick(now: Date) async {
     for routine in store.routines where routine.enabled {
       guard case .schedule = routine.trigger else { continue }
+      if let trigger = scheduledTrigger[routine.id], trigger != routine.trigger {
+        // The schedule was edited: the new one counts from now, not from the old due time.
+        nextRunAt[routine.id] = nil
+      }
+      scheduledTrigger[routine.id] = routine.trigger
       let due = nextRunAt[routine.id] ?? Self.nextScheduledFire(for: routine, after: now)
       guard let due else { continue }
       nextRunAt[routine.id] = due
@@ -440,7 +496,16 @@ public final class RoutineEngine {
     if let result, result != "[SILENT]", !result.isEmpty {
       active.record.result = String(result.prefix(Self.maximumStoredResultCharacters))
     }
-    if failed { active.record.error = "Agent run failed" }
+    var failureDetail: String?
+    if failed {
+      failureDetail = await failureDetailProvider(nodeID)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      if let detail = failureDetail, !detail.isEmpty {
+        active.record.error = "Agent run failed: \(String(detail.prefix(300)))"
+      } else {
+        active.record.error = "Agent run failed"
+      }
+    }
     if !failed, active.record.outcome != .noChange, let result,
       let routine = store.routine(id: routineID)
     {
@@ -467,7 +532,15 @@ public final class RoutineEngine {
       OttoEvent(
         type: .routineCompleted, nodeID: nodeID, routineID: routineID,
         runID: active.record.runID, outcome: active.record.outcome.rawValue))
-    if !heldForReview {
+    // Only the agent run itself is retried. A failed delivery or review hand-off happened
+    // after the work was done, so running the agent again could repeat its side effects.
+    let retrying =
+      failed
+      && scheduleRetryIfTransient(
+        routineID: routineID, failedRunID: active.record.runID, payload: active.payload,
+        ignoredEnabled: active.ignoredEnabled,
+        verdict: RoutineFailureClassifier.classify(failureDetail), failureText: result)
+    if !heldForReview && !retrying {
       await fireFollowers(
         of: routineID, outcome: active.record.outcome, result: result, depth: active.chainDepth)
     }
@@ -476,6 +549,49 @@ public final class RoutineEngine {
     {
       _ = try? await fire(routine, payload: queued)
     }
+  }
+
+  /// Schedules the single automatic retry of a failed run when its failure looks transient.
+  /// Test runs, retries themselves and permanent failures are never retried.
+  private func scheduleRetryIfTransient(
+    routineID: UUID, failedRunID: UUID, payload: RoutineFirePayload, ignoredEnabled: Bool,
+    verdict: RoutineFailureClassifier.Verdict, failureText: String?
+  ) -> Bool {
+    guard verdict == .transient, payload.retryOfRunID == nil, !ignoredEnabled,
+      pendingRetries[routineID] == nil
+    else { return false }
+    let delay = retryDelaySeconds
+    let task = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(delay))
+      guard !Task.isCancelled else { return }
+      await self?.runRetry(routineID: routineID)
+    }
+    pendingRetries[routineID] = PendingRetry(
+      failedRunID: failedRunID, payload: payload, failureText: failureText,
+      dueAt: Date.now.addingTimeInterval(delay), task: task)
+    return true
+  }
+
+  private func runRetry(routineID: UUID) async {
+    guard let pending = pendingRetries.removeValue(forKey: routineID) else { return }
+    let late = Date.now.timeIntervalSince(pending.dueAt) > Self.retryLatenessToleranceSeconds
+    var payload = pending.payload
+    payload.retryOfRunID = pending.failedRunID
+    // The original delivery's key is already spent; the retry is the same delivery again.
+    payload.idempotencyKey = nil
+    if !late, let routine = store.routine(id: routineID), routine.enabled, retryGate(routine),
+      activeByRoutine[routineID] == nil
+    {
+      do {
+        if case .fired = try await fire(routine, payload: payload) { return }
+      } catch {
+        return  // A retry that failed to start has already run the on-failure steps.
+      }
+    }
+    // A dropped or skipped retry still owes the flow its on-failure steps.
+    await fireFollowers(
+      of: routineID, outcome: .failed, result: pending.failureText,
+      depth: pending.payload.chainDepth)
   }
 
   /// Whether an answer waits on Home for Approve: only when approving sets something off (an

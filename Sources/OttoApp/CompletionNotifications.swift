@@ -41,6 +41,10 @@ final class CompletionNotifications: NSObject, ObservableObject, UNUserNotificat
         await self.consume(event, services: services, store: store)
       }
     }
+    services.watchdogAlertHandler = { [weak self, weak services] findings in
+      guard let self, let services else { return }
+      Task { await self.notifyWatchdog(findings, services: services, store: store) }
+    }
     Task { await requestPermissionIfEnabled() }
   }
 
@@ -96,6 +100,36 @@ final class CompletionNotifications: NSObject, ObservableObject, UNUserNotificat
       try await UNUserNotificationCenter.current().add(
         UNNotificationRequest(identifier: key, content: content, trigger: nil))
     } catch { permissionStatus = "Could not show notification: \(error.localizedDescription)" }
+  }
+
+  /// The watchdog already de-duplicates; each agent keeps a single banner that a repeat replaces.
+  private func notifyWatchdog(
+    _ findings: [AgentWatchdogFinding], services: ApplicationServices, store: CanvasStore
+  ) async {
+    guard Self.enabled(Self.enabledKey) else { return }
+    for finding in findings {
+      let nodeID = finding.agentID
+      guard
+        let node = store.snapshot.canvases.lazy.flatMap(\.nodes).first(where: { $0.id == nodeID }),
+        !(NSApp.isActive && visibleConversations.values.contains(nodeID))
+      else { continue }
+      let isBot = services.botRoster().contains { $0.nodeID == nodeID }
+      guard Self.enabled(isBot ? Self.botsKey : Self.sessionsKey) else { continue }
+      let content = UNMutableNotificationContent()
+      switch finding.kind {
+      case .stalled: content.title = "\(node.displayName) looks stuck"
+      case .looping: content.title = "\(node.displayName) may be going in circles"
+      case .waitingOnPerson: content.title = "\(node.displayName) is still waiting for you"
+      }
+      content.body = "\(finding.reason). Open the conversation to check on it."
+      content.threadIdentifier = nodeID.uuidString
+      content.userInfo = ["nodeID": nodeID.uuidString]
+      if Self.enabled(Self.soundKey) { content.sound = .default }
+      do {
+        try await UNUserNotificationCenter.current().add(
+          UNNotificationRequest(identifier: "watchdog:\(nodeID)", content: content, trigger: nil))
+      } catch { permissionStatus = "Could not show notification: \(error.localizedDescription)" }
+    }
   }
 
   nonisolated func userNotificationCenter(

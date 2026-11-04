@@ -63,4 +63,22 @@ struct ProviderUsageLimitTests {
       in: "rate limit exceeded", provider: .grok, now: now, calendar: calendar)
     #expect(unknown != nil && unknown?.resetsAt == nil)
   }
+
+  @Test("Relative reset durations keep their minutes and day units")
+  func compoundRelativeReset() {
+    // The old pattern matched at most one unit: "in 2 hours and 15 minutes" lost the minutes,
+    // and a weekly "in 3 days" matched no unit at all. Both left the notice without the reset
+    // time its "wait and retry at…" action needs.
+    let forms: [(String, TimeInterval)] = [
+      ("You've hit your usage limit. Try again in 2 hours.", 2 * 3600),
+      ("5-hour limit reached. Try again in 2 hours and 15 minutes.", 2 * 3600 + 15 * 60),
+      ("You've hit your weekly limit, try again in 3 days.", 3 * 86_400),
+      ("Usage limit reached · resets in 1 day 6 hours", 30 * 3600),
+    ]
+    for (text, expected) in forms {
+      let limit = ProviderUsageLimit.detect(
+        in: text, provider: .codex, now: now, calendar: calendar)
+      #expect(limit?.resetsAt == now.addingTimeInterval(expected), "\(text)")
+    }
+  }
 }

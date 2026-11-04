@@ -92,7 +92,7 @@ extension ApplicationServices {
     }.joined(separator: "\n")
     return """
       ## Configured subagents
-      The user has approved these helpers and their accounts. Use agent.spawn with subagentID and a focused prompt to delegate suitable work. Required provider, position and permission fields remain in the tool schema; Otto resolves the saved provider/account/model and caps permissions to yours. For these helpers use Otto delegation, so their selected subscription is respected. Send only the task context needed, not your entire conversation or private memory. Wait using event.wait, read agent.get_result, then synthesise the result. Do not substitute another account if a helper fails. These helpers cannot recursively access your saved helper list.
+      The user has approved these helpers and their accounts. Use agent.spawn with subagentID and a focused prompt to delegate suitable work. Required provider, position and permission fields remain in the tool schema; Otto resolves the saved provider/account/model and caps permissions to yours. For these helpers use Otto delegation, so their selected subscription is respected. Send only the task context needed, not your entire conversation or private memory. When the user is waiting, wait using event.wait, read agent.get_result, then synthesise the result; otherwise you may end your turn, and Otto messages you when each helper finishes. Do not substitute another account if a helper fails. These helpers cannot recursively access your saved helper list.
       \(rows)
       """
   }

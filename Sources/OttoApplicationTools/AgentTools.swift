@@ -1361,6 +1361,9 @@ public struct AgentInterruptTool: OttoTool {
     -> AgentStatusOutput
   {
     try await supervisor.interrupt(agentID: input.agentID)
+    // A parent that stops its own child already knows how it ended.
+    await supervisor.markDelegatedCompletionConsumed(
+      childID: input.agentID, by: context.sourceNodeID)
     return try await output(for: input.agentID, supervisor: supervisor)
   }
 }
@@ -1374,6 +1377,8 @@ public struct AgentStopTool: OttoTool {
     -> AgentStatusOutput
   {
     try await supervisor.stop(agentID: input.agentID)
+    await supervisor.markDelegatedCompletionConsumed(
+      childID: input.agentID, by: context.sourceNodeID)
     return try await output(for: input.agentID, supervisor: supervisor)
   }
 }
@@ -1399,6 +1404,9 @@ public struct AgentGetResultTool: OttoTool {
     -> AgentStatusOutput
   {
     let result = try await output(for: input.agentID, supervisor: supervisor)
+    // Reading a finished child's result inside the turn replaces the background notice.
+    await supervisor.markDelegatedCompletionConsumed(
+      childID: input.agentID, by: context.sourceNodeID)
     await recordHandoffIfDelegated(targetID: input.agentID, context: context)
     return result
   }

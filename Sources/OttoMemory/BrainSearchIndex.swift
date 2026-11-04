@@ -1,5 +1,9 @@
 import Foundation
-import SQLite3
+#if canImport(SQLite3)
+  import SQLite3
+#else
+  import CSQLite
+#endif
 
 /// Derived full-text index over Project Brain records. It accelerates `memory.search`; it is
 /// never the only copy of knowledge and can be deleted and rebuilt from the canonical Markdown

@@ -1,5 +1,11 @@
 import Foundation
 
+#if canImport(Darwin)
+  import Darwin
+#else
+  import Glibc
+#endif
+
 /// One file's change between two turn checkpoints, from `git diff --numstat`.
 public struct TurnFileChange: Codable, Sendable, Equatable, Identifiable {
   public var path: String
@@ -72,17 +78,37 @@ public actor TurnCheckpointStore {
 
   private static let diffByteLimit = 512 * 1024
 
-  public init() {}
+  private let gitExecutable: URL
+  private let checkpointTimeout: TimeInterval
+  private var checkpointDeadline: DispatchTime?
+
+  public init() {
+    gitExecutable = URL(fileURLWithPath: "/usr/bin/git")
+    checkpointTimeout = 2
+  }
+
+  // A real subprocess can be stalled deterministically in regression tests.
+  init(gitExecutable: URL, checkpointTimeout: TimeInterval) {
+    self.gitExecutable = gitExecutable
+    self.checkpointTimeout = checkpointTimeout
+  }
 
   /// Captures the working tree at `directory` and returns the checkpoint ref name, or nil when
   /// the directory is not inside a git work tree (no repository means no diff to offer — the
   /// caller should degrade by not showing a summary, not by erroring).
   public func captureCheckpoint(in directory: String, agentID: UUID) throws -> String? {
+    // One budget for the whole optional snapshot, including repository probes and pruning.
+    // The caller already degrades to no change summary when capture throws.
+    checkpointDeadline = .now() + checkpointTimeout
+    defer { checkpointDeadline = nil }
     guard isInsideWorkTree(directory) else { return nil }
     let commonDirectory = try gitCommonDirectory(of: directory)
     let temporaryIndex = (commonDirectory as NSString)
       .appendingPathComponent("otto-checkpoint-index-\(UUID().uuidString)")
-    defer { try? FileManager.default.removeItem(atPath: temporaryIndex) }
+    defer {
+      try? FileManager.default.removeItem(atPath: temporaryIndex)
+      try? FileManager.default.removeItem(atPath: temporaryIndex + ".lock")
+    }
 
     var environment = ProcessInfo.processInfo.environment
     environment["GIT_INDEX_FILE"] = temporaryIndex
@@ -246,25 +272,63 @@ public actor TurnCheckpointStore {
   private func runGit(
     _ arguments: [String], at directory: String, environment: [String: String]? = nil
   ) throws -> String {
+    try Task.checkCancellation()
+    let deadline = checkpointDeadline ?? (.now() + 10)
+    guard DispatchTime.now() < deadline else {
+      throw TurnCheckpointError.git("Snapshot time limit exceeded")
+    }
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.executableURL = gitExecutable
     process.arguments = arguments
     process.currentDirectoryURL = URL(fileURLWithPath: directory)
     if let environment { process.environment = environment }
-    let stdout = Pipe()
-    let stderr = Pipe()
+
+    // Pipes can deadlock if Git fills stderr while we are reading stdout. Files also let us
+    // return on timeout without waiting for EOF from a stuck Git process or its children.
+    let captureDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("otto-checkpoint-output-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(
+      at: captureDirectory, withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: captureDirectory) }
+    let outputURL = captureDirectory.appendingPathComponent("stdout")
+    let errorsURL = captureDirectory.appendingPathComponent("stderr")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    FileManager.default.createFile(atPath: errorsURL.path, contents: nil)
+    let stdout = try FileHandle(forWritingTo: outputURL)
+    let stderr = try FileHandle(forWritingTo: errorsURL)
+    defer {
+      try? stdout.close()
+      try? stderr.close()
+    }
     process.standardOutput = stdout
     process.standardError = stderr
+    let exited = DispatchSemaphore(value: 0)
+    process.terminationHandler = { _ in exited.signal() }
     try process.run()
-    let output = stdout.fileHandleForReading.readDataToEndOfFile()
-    let errors = stderr.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
+    // Foundation normally gives a child its own process group. Stop that group as well as
+    // Git so a blocked clean filter cannot survive a timed-out snapshot.
+    let pid = process.processIdentifier
+    let ownsProcessGroup = getpgid(pid) == pid
+    if exited.wait(timeout: deadline) == .timedOut {
+      kill(ownsProcessGroup ? -pid : pid, SIGTERM)
+      let stopped = exited.wait(timeout: .now() + 0.1) == .success
+      if ownsProcessGroup {
+        kill(-pid, SIGKILL)
+      } else if !stopped, process.isRunning {
+        kill(pid, SIGKILL)
+      }
+      if !stopped { _ = exited.wait(timeout: .now() + 0.1) }
+      throw TurnCheckpointError.git("git \(arguments.first ?? ""): time limit exceeded")
+    }
     guard process.terminationStatus == 0 else {
+      let errors = try Data(contentsOf: errorsURL)
       throw TurnCheckpointError.git(
         "git \(arguments.joined(separator: " ")): "
-          + String(decoding: errors, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+          + String(decoding: errors.suffix(2_000), as: UTF8.self)
+          .trimmingCharacters(in: .whitespacesAndNewlines)
       )
     }
-    return String(decoding: output, as: UTF8.self)
+    return String(decoding: try Data(contentsOf: outputURL), as: UTF8.self)
   }
 }

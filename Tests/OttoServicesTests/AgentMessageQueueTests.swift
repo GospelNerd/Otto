@@ -37,7 +37,7 @@ struct AgentMessageQueueTests {
     #expect(condition())
   }
 
-  @Test func fifoWaitsForCompletionAndIgnoresDuplicateEvents() async throws {
+  @Test func pendingMessagesMergeIntoOnePromptAndIgnoreDuplicateEvents() async throws {
     let p = Provider()
     let id = UUID()
     let other = UUID()
@@ -50,12 +50,55 @@ struct AgentMessageQueueTests {
     p.state = .done
     q.observe(agentID: id, state: .done)
     q.observe(agentID: id, state: .done)
-    try await settle { p.sent == ["first"] }
-    #expect(q.messages[id]?.map(\.text) == ["second"])
+    let separator = AgentMessageQueue.mergedMessageSeparator
+    try await settle { p.sent == ["first\(separator)second"] }
+    try await Task.sleep(for: .milliseconds(20))
+    #expect(p.sent.count == 1)
+    #expect(q.messages[id, default: []].isEmpty)
     #expect(q.messages[other]?.map(\.text) == ["other session"])
+    q.enqueue(agentID: id, text: "third")
     p.state = .done
     q.observe(agentID: id, state: .done)
-    try await settle { p.sent == ["first", "second"] }
+    try await settle { p.sent.last == "third" }
+  }
+
+  @Test func slashCommandsAreNeverMergedWithOtherMessages() async throws {
+    let p = Provider()
+    let id = UUID()
+    let q = p.queue()
+    for text in ["one", "two", "/goal ship it", "three"] { q.enqueue(agentID: id, text: text) }
+    let separator = AgentMessageQueue.mergedMessageSeparator
+    for expected in ["one\(separator)two", "/goal ship it", "three"] {
+      p.state = .done
+      q.observe(agentID: id, state: .done)
+      try await settle { p.sent.last == expected }
+    }
+    #expect(p.sent.count == 3)
+  }
+
+  @Test func failedMergedSendReturnsEveryMessageToTheFrontInOrder() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appending(path: "queue.json")
+    let p = Provider()
+    let id = UUID()
+    p.rejects = true
+    let q = p.queue(url: url)
+    q.enqueue(agentID: id, text: "a")
+    q.enqueue(agentID: id, text: "b")
+    q.enqueue(agentID: id, text: "c")
+    p.state = .done
+    q.observe(agentID: id, state: .done)
+    try await settle { q.errors[id] != nil }
+    #expect(q.messages[id]?.map(\.text) == ["a", "b", "c"])
+    #expect(q.paused.contains(id))
+    #expect(q.errors[id]?.contains("queued messages") == true)
+    #expect(p.queue(url: url).messages[id]?.map(\.text) == ["a", "b", "c"])
+    q.enqueue(agentID: id, text: "d")
+    p.rejects = false
+    q.resume(id)
+    let separator = AgentMessageQueue.mergedMessageSeparator
+    try await settle { p.sent == [["a", "b", "c", "d"].joined(separator: separator)] }
   }
 
   @Test func interruptionPausesUntilExplicitResumeAndRemovalWorks() async throws {

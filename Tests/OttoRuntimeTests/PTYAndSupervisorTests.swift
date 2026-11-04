@@ -284,6 +284,42 @@ struct AgentSupervisorTests {
     try await supervisor.stop(agentID: id)
   }
 
+  @Test("A provider auth failure at its idle prompt fails the run and clears attention")
+  func providerAuthFailureFailsRunAndClearsAttention() async throws {
+    // Issue #54: Claude Code's OAuth session expires and the CLI prints its failure line while
+    // staying at its idle prompt. The prose must read as a failed run that needs re-authentication
+    // — not as a question waiting on the person — so attention resolves instead of lingering as
+    // a Home "Needs you" card and buddy bubble that re-post forever.
+    let supervisor = AgentSupervisor()
+    let id = try await supervisor.spawn(
+      provider: .claudeCode,
+      specification: ProcessLaunchSpec(
+        executable: "/bin/sh",
+        arguments: [
+          "-c",
+          #"printf 'ready\n'; while IFS= read -r line; do :; done"#,
+        ],
+        workingDirectory: FileManager.default.currentDirectoryPath
+      ),
+      parser: .claude(ClaudeOutputParser()),
+      initialState: .idle,
+      executionMode: .interactiveProvider
+    )
+    try await waitForOutput("ready", id: id, supervisor: supervisor)
+    try await supervisor.sendInput(
+      agentID: id, text: "Failed to authenticate: OAuth session expired")
+    try await waitForState(.failed, id: id, supervisor: supervisor)
+    let snapshot = try await supervisor.snapshot(agentID: id)
+    // The failure is visible in the conversation, and the run left the waiting state: a dead
+    // provider is not a question the person can answer in chat.
+    #expect(
+      snapshot.transcript.contains {
+        $0.kind == .notice && $0.text.contains("Failed to authenticate")
+      })
+    #expect(snapshot.state != .waitingUser && snapshot.state != .waitingPermission)
+    try await supervisor.stop(agentID: id)
+  }
+
   @Test("Approve or Deny on a card with nothing behind it clears the card")
   func dismissUnbackedAttention() async throws {
     let supervisor = AgentSupervisor()
@@ -376,6 +412,39 @@ struct AgentSupervisorTests {
     #expect(resumed?.prompt?.contains("fresh memory for second task") == true)
     #expect(resumed?.resumeSessionID == "saved-session")
     #expect(try await supervisor.snapshot(agentID: id).lastPrompt == "second task")
+  }
+
+  @Test("Repeating an identical tool call keeps every call, but an instant duplicate is dropped")
+  func repeatedToolCallsStayInTranscript() async throws {
+    let supervisor = AgentSupervisor()
+    await supervisor.setTurnContextProvider { _, _ in nil }
+    let id = try await supervisor.spawnOneShot(
+      adapter: RepeatingToolCallAdapter(),
+      request: AgentLaunchRequest(
+        workspacePath: FileManager.default.temporaryDirectory.path, prompt: "loop"))
+    try await waitForExit(id: id, supervisor: supervisor)
+    let calls = try await supervisor.snapshot(agentID: id).transcript.filter {
+      $0.kind == .toolCall
+    }
+    #expect(calls.count == 3)
+    #expect(calls.allSatisfy { $0.text == "sleep 25; echo same" })
+  }
+
+  @Test("A shell agent runs its prompt as written even when turn memory is on")
+  func shellPromptSkipsMemoryEnvelope() async throws {
+    let supervisor = AgentSupervisor()
+    // The envelope contains a ")" on its second line, which zsh and sh reject as a command.
+    await supervisor.setTurnContextProvider { _, _ in "remembered (retrieved data)" }
+    let id = try await supervisor.spawnOneShot(
+      adapter: ShellAdapter(executablePath: "/bin/sh"),
+      request: AgentLaunchRequest(
+        workspacePath: FileManager.default.temporaryDirectory.path,
+        prompt: "echo SHELL-PROMPT-OK"))
+    try await waitForExit(id: id, supervisor: supervisor)
+    let snapshot = try await supervisor.snapshot(agentID: id)
+    #expect(snapshot.output.contains("SHELL-PROMPT-OK"))
+    #expect(!snapshot.output.contains("parse error"))
+    #expect(!snapshot.output.contains("syntax error"))
   }
 
   @Test("Provider launches receive the memory bootstrap and record its hash")
@@ -1180,5 +1249,27 @@ private struct MemoryCapturingAdapter: AgentAdapter {
     await capture.record(request)
     return ProcessLaunchSpec(
       executable: "/bin/sh", arguments: ["-c", "exit 0"], workingDirectory: request.workspacePath)
+  }
+}
+
+/// Prints the same Claude Code Bash call three times, 1.2 s apart, the first one twice at once.
+private struct RepeatingToolCallAdapter: AgentAdapter {
+  let provider = AgentProvider.claudeCode
+
+  func detectInstallation() async -> InstallationStatus {
+    .installed(path: "/bin/sh", version: "fixture")
+  }
+
+  func availableModels() async -> [AgentModel] { [] }
+
+  func buildLaunchSpec(_ request: AgentLaunchRequest) async throws -> ProcessLaunchSpec {
+    let line =
+      #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Bash","#
+      + #""input":{"command":"sleep 25; echo same"}}]}}"#
+    let script =
+      "l='\(line)'; echo \"$l\"; echo \"$l\"; sleep 1.2; echo \"$l\"; sleep 1.2; "
+      + "echo \"$l\""
+    return ProcessLaunchSpec(
+      executable: "/bin/sh", arguments: ["-c", script], workingDirectory: request.workspacePath)
   }
 }

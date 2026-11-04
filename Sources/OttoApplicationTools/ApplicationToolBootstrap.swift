@@ -271,7 +271,7 @@ public enum ApplicationToolBootstrap {
         RecordingStopTool(recorder: canvasRecorder, store: store, mediaRuntime: mediaRuntime))
       try await registry.register(RecordingStatusTool(recorder: canvasRecorder))
     }
-    try await registry.register(EventWaitTool(bus: supervisor.eventBus))
+    try await registry.register(EventWaitTool(bus: supervisor.eventBus, supervisor: supervisor))
     try await registry.register(DiagnosticsRunTool(workspacePath: workspacePath))
     try await registry.register(
       WorktreeStatusTool(manager: worktreeManager, sessions: worktreeSessions))

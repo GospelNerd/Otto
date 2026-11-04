@@ -4,11 +4,29 @@ All notable changes to Otto (called Muse before 0.2.0) are documented here. Each
 published verbatim as the in-app update notes and on the download site, so write for users:
 lead with what they can now do, not how it was implemented.
 
-## Unreleased
+## 0.2.15 — 2026-11-04
+
+### New
+
+- **Agents hear back when their background work finishes.** When a session or bot starts another agent or a long command and ends its turn, Otto messages it when that work is done, so it can carry on or tell you the result without you checking.
+- **Telegram replies read like texts.** Bots know a message came from Telegram and keep replies short and plain. Diagrams, tables and detail sections are turned into plain text on Telegram and iMessage.
+- **Telegram sends late answers.** If a bot takes more than two minutes, Telegram says it's still working and sends the answer to the same chat when it's done, instead of telling you to check your Mac.
+- **Otto spots stuck agents.** Home lists an agent that has made no progress for 15 minutes or keeps repeating the same step, with Open chat and Stop it, and reminds you when an agent has waited 20 minutes for your OK. An automation that fails on a network blip, timeout or rate limit is retried once after two minutes.
+
+### Changed
+
+- **Messages you queue for a busy agent arrive together.** Several messages typed while an agent works are sent as one message when it is free, instead of one turn each.
 
 ### Fixed
 
+- Sending from Home no longer stays stuck when a Git change snapshot stalls. Snapshots have a two-second budget, and Home opens the destination chat as soon as it is created.
+- **Editing an automation's schedule takes effect straight away.** Before, the old schedule's next run still happened once (or until Otto restarted).
+- **Shell helpers run their command again.** A Shell agent started by a bot or session failed straight away with "parse error near ')'" because Otto wrapped its command in chat context. It now runs exactly what it was given.
 - **Agent tool calls no longer stall when many arrive at once.** Otto's control socket, which every agent, `ottoctl` and `otto-mcp` call goes through, waited for replies on a small shared thread pool. A burst of calls could hold every thread until the calls timed out after 10 seconds. Each call and each incoming connection now waits on its own thread. The control socket also builds on Linux. Thanks to Justin Philip Flores (GospelNerd) for PR #50.
+- **A signed-out agent shows as stopped instead of nagging you.** When Claude Code's sign-in expires ("Failed to authenticate: OAuth session expired"), Otto now marks the run as failed instead of leaving it "working", and its old "Needs you" entry clears instead of reappearing (issue #54). Thanks to Sukhpal Gill (onlinegill) for PR #56.
+- **Usage-limit waits use the full reset time.** "Try again in 2 hours and 15 minutes" no longer retries 15 minutes early, and weekly limits that say "in 3 days" now offer Wait and retry. Thanks to Sukhpal Gill for PR #59.
+- **Automation schedules like `5/15` are accepted.** Cron steps that start from a single value now run at 5, 20, 35 and 50 past the hour instead of being rejected as invalid. Thanks to Sukhpal Gill for PR #55.
+- **An automation with an impossible time can be saved again.** A schedule such as `5 24 * * *` (set by an agent) showed as "Every day at 24:05" and blocked every save. It now shows as a custom schedule. Thanks to Sukhpal Gill for PR #58.
 
 ## 0.2.14 — 2026-11-02
 

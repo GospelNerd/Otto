@@ -74,6 +74,39 @@ struct RoutineStoreTests {
     #expect(RoutineEngine.missedRunGrace(for: routine, from: start) == 7_200)
   }
 
+  @MainActor @Test func editingAScheduleTakesEffectWithoutARestart() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appending(path: "otto-routines-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = RoutineStore(workspacePath: root.path)
+    // Due once a day, an hour from now: nothing fires on this tick.
+    let later = Calendar(identifier: .gregorian).dateComponents(
+      in: TimeZone(identifier: "Europe/London")!, from: Date().addingTimeInterval(3_600))
+    var routine = try store.save(
+      Routine(
+        name: "Moved", instruction: "Run",
+        trigger: .schedule(cron: "\(later.minute!) \(later.hour!) * * *", intervalSeconds: nil),
+        target: .existingAgent(nodeID: UUID()), enabled: true,
+        timeZoneIdentifier: "Europe/London"))
+    let fired = FireCounter()
+    let engine = RoutineEngine(
+      store: store, eventBus: OttoEventBus(), tickSeconds: 30,
+      executor: { _, _ in
+        await fired.increment()
+        return UUID()
+      }, resultProvider: { _ in nil },
+      deliveryHandler: { _, _, _ in })
+    await engine.tick(now: .now)
+    #expect(await fired.value == 0)
+    // The person changes it to every 60 s; it must count from the edit, not wait for tomorrow.
+    routine.trigger = .schedule(cron: nil, intervalSeconds: 60)
+    routine = try store.save(routine)
+    await engine.tick(now: .now)
+    #expect(await fired.value == 0)
+    await engine.tick(now: Date().addingTimeInterval(61))
+    #expect(await fired.value == 1)
+  }
+
   @MainActor @Test func overlapGuardSkipsOrQueuesLatest() async throws {
     let root = FileManager.default.temporaryDirectory
       .appending(path: "otto-routines-\(UUID().uuidString)")
@@ -222,4 +255,9 @@ struct RoutineStoreTests {
     #expect(store.recentRuns(routineID: routine.id).contains { $0.outcome == .noChange })
     #expect(deliveries == 0)
   }
+}
+
+private actor FireCounter {
+  private(set) var value = 0
+  func increment() { value += 1 }
 }

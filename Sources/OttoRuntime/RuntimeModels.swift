@@ -491,3 +491,30 @@ extension RuntimeError: OttoFailureClassifying {
     }
   }
 }
+
+/// One finished piece of background work that an agent started through an Otto tool
+/// (`agent.spawn` or `terminal.run`) and has not yet seen inside its own turn.
+public struct DelegatedCompletion: Sendable, Equatable {
+  public let childID: UUID
+  public let name: String
+  /// `agent` or `command`, matching the delegated child's kind.
+  public let kind: String
+  public let state: AgentLifecycleState
+  public let exitCode: Int32?
+  /// Untrusted, bounded output: the agent's result or the command's sanitized output tail.
+  public let excerpt: String
+  public let completedAt: Date
+
+  public init(
+    childID: UUID, name: String, kind: String, state: AgentLifecycleState, exitCode: Int32?,
+    excerpt: String, completedAt: Date
+  ) {
+    self.childID = childID
+    self.name = name
+    self.kind = kind
+    self.state = state
+    self.exitCode = exitCode
+    self.excerpt = excerpt
+    self.completedAt = completedAt
+  }
+}

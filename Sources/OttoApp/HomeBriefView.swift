@@ -305,6 +305,9 @@ struct HomeBriefView: View {
           if case .openURL(let url) = item.action {
             Button("Open original") { perform(.openURL(url)) }
           }
+          if case .stopAgent(let id) = item.secondaryAction {
+            Button("Stop it") { perform(.stopAgent(id)) }
+          }
           Divider()
           if item.kind == .todo {
             Button(item.origin == .otto ? "Clear" : "Mark done") { complete(item) }
@@ -347,7 +350,7 @@ struct HomeBriefView: View {
 
   private func opensInPlace(_ item: BriefItem) -> Bool {
     switch item.action {
-    case .openAgent, .openActivity, .openRoutine: true
+    case .openAgent, .openActivity, .openRoutine, .stopAgent: true
     case .openURL, nil: false
     }
   }

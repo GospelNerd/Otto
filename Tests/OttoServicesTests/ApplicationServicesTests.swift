@@ -14,6 +14,74 @@ import Testing
 @MainActor
 @Suite("Application services")
 struct ApplicationServicesTests {
+  @Test("A blocked Git snapshot cannot prevent a user's prompt reaching the agent")
+  func sendsPromptAfterSnapshotTimeout() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("otto-send-checkpoint-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    func git(_ arguments: [String]) throws {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+      process.arguments = arguments
+      process.currentDirectoryURL = root
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try process.run()
+      process.waitUntilExit()
+      #expect(process.terminationStatus == 0)
+    }
+    try git(["init"])
+    try git([
+      "-c", "user.name=Test", "-c", "user.email=test@localhost",
+      "commit", "--allow-empty", "-m", "base",
+    ])
+    try ".otto/\n".write(
+      to: root.appendingPathComponent(".gitignore"),
+      atomically: true, encoding: .utf8)
+    try "blocked.txt filter=stall\n".write(
+      to: root.appendingPathComponent(".gitattributes"),
+      atomically: true, encoding: .utf8)
+    try "test\n".write(
+      to: root.appendingPathComponent("blocked.txt"),
+      atomically: true, encoding: .utf8)
+    try git([
+      "config", "filter.stall.clean", "echo started > .git/stall-started; exec /bin/sleep 30",
+    ])
+    let canvas = OttoCanvas(name: "Snapshot timeout")
+    let store = CanvasStore(
+      snapshot: WorkspaceSnapshot(canvases: [canvas], activeCanvasID: canvas.id))
+    let nodeID = try #require(
+      store.dispatch(.createNode(kind: .agent, at: WorldPoint(x: 0, y: 0)))
+        .affectedNodeIDs.first)
+    let services = ApplicationServices(store: store, workspacePath: root.path)
+    await services.start()
+    defer { services.stop() }
+    _ = try await services.supervisor.spawn(
+      provider: .shell,
+      specification: ProcessLaunchSpec(
+        executable: "/bin/sh",
+        arguments: [
+          "-c",
+          """
+          printf 'OTTO_STATUS:IDLE\\r\\n'
+          IFS= read -r prompt
+          printf 'OTTO_RESULT:Completed %s\\r\\n' "$prompt"
+          printf 'OTTO_STATUS:DONE\\r\\n'
+          """,
+        ], workingDirectory: root.path), id: nodeID)
+    try await waitUntil { services.fleet[nodeID]?.state == .idle }
+    let start = ContinuousClock.now
+    try await services.sendPrompt(agentID: nodeID, prompt: "send despite stalled snapshot")
+    #expect(start.duration(to: .now) < .seconds(5))
+    #expect(
+      FileManager.default.fileExists(atPath: root.appendingPathComponent(".git/stall-started").path)
+    )
+    try await waitUntil { services.fleet[nodeID]?.state == .done }
+    #expect(services.fleet[nodeID]?.result == "Completed send despite stalled snapshot")
+    await services.shutdown()
+  }
+
   @Test("Runtime projection survives a later startup failure")
   func runtimeProjectionSurvivesPartialStartup() async throws {
     let canvas = OttoCanvas(name: "Partial startup")

@@ -15,9 +15,34 @@ public struct TelegramIncomingMessage: Codable, Sendable {
   public struct Sender: Codable, Sendable {
     public let id: Int64
     public let isBot: Bool?
+    public let firstName: String?
+    public let lastName: String?
+    public let username: String?
     enum CodingKeys: String, CodingKey {
       case id
       case isBot = "is_bot"
+      case firstName = "first_name"
+      case lastName = "last_name"
+      case username
+    }
+
+    public init(
+      id: Int64, isBot: Bool?, firstName: String? = nil, lastName: String? = nil,
+      username: String? = nil
+    ) {
+      self.id = id
+      self.isBot = isBot
+      self.firstName = firstName
+      self.lastName = lastName
+      self.username = username
+    }
+
+    /// The name Telegram shows for this person: first and last name, else @username.
+    public var displayName: String? {
+      let name = [firstName, lastName].compactMap { $0 }.joined(separator: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      if !name.isEmpty { return name }
+      return username.map { "@\($0)" }
     }
   }
   /// A voice note or audio file. Only its Bot API handle is kept; Otto downloads the bytes
@@ -115,6 +140,14 @@ public struct TelegramIncomingMessage: Codable, Sendable {
 
   public var isPrivateHuman: Bool {
     chat.type == "private" && from?.id == chat.id && from?.isBot == false
+  }
+
+  /// The Otto header for this message's prompt: which chat it came through, from whom, and how to
+  /// reply. Only the paired person's messages reach a bot (see `isAuthorized`), so the text after
+  /// it stays an ordinary, trusted user message.
+  public var channelHeader: String {
+    ChatChannelReplyFormatter.inboundHeader(
+      channel: .telegram, sender: from?.displayName, isGroup: !isPrivateHuman && isGroupHuman)
   }
 
   public var isGroupHuman: Bool {
@@ -413,10 +446,9 @@ public actor TelegramBotTransport {
     }
   }
 
+  /// Sends `message` as is, split into Telegram-sized pieces at paragraph or line breaks.
   public func send(_ message: String, to chatID: Int64) async throws {
-    let characters = Array(message)
-    for chunk in stride(from: 0, to: characters.count, by: 3_500) {
-      let part = String(characters[chunk..<min(chunk + 3_500, characters.count)])
+    for part in ChatChannelReplyFormatter.chunks(message) where !part.isEmpty {
       let _: Receipt = try await call(
         "sendMessage",
         arguments: [
@@ -466,6 +498,14 @@ public final class TelegramConnector: ObservableObject {
   private var queuedPrompts: [UUID: [QueuedPrompt]] = [:]
   /// Bots whose queue a task is working through, by that task's id. One per bot keeps order.
   private var queuePumps: [UUID: UUID] = [:]
+  /// Bots with a run still being followed after the chat was told "Still working", by that
+  /// follower's id. The queue holds the bot's next message until the follower has picked up the
+  /// run's answer, so the late answer and the next one cannot be mixed up.
+  private var lateFollows: [UUID: UUID] = [:]
+  /// How long a run is followed before the chat hears that it is still working.
+  var followWindow: TimeInterval = 120
+  /// How long a run is then followed in the background for its late answer.
+  var lateFollowWindow: TimeInterval = 4 * 3_600
 
   private struct PendingAlbum {
     var media: [TelegramMedia]
@@ -476,8 +516,18 @@ public final class TelegramConnector: ObservableObject {
   private struct QueuedPrompt {
     let id = UUID()
     let text: String
+    /// The channel header the bot sees with this turn only; the chat on the Mac shows `text`.
+    let context: String?
     let chat: Int64
     let client: TelegramBotTransport
+  }
+
+  /// How following a run ended.
+  enum FollowOutcome: Equatable {
+    /// The chat has the answer, a question or approval notice, or nothing more is coming.
+    case settled
+    /// The wait ran out while the run, if it started, was still going.
+    case stillRunning(runID: UUID?)
   }
 
   /// More than this many waiting messages for one bot are refused, not silently dropped.
@@ -753,12 +803,16 @@ public final class TelegramConnector: ObservableObject {
     messageTasks = [:]
     queuedPrompts = [:]
     queuePumps = [:]
+    lateFollows = [:]
   }
 
   /// What is waiting for a bot, oldest first.
   func queuedTexts(for botID: UUID) -> [String] {
     (queuedPrompts[botID] ?? []).map(\.text)
   }
+
+  /// Whether a run of this bot is being followed for a late answer.
+  func isFollowingLate(_ botID: UUID) -> Bool { lateFollows[botID] != nil }
 
   /// Runs `work` on its own task so polling continues meanwhile: an Approve tap or the next
   /// message must not wait behind it.
@@ -868,7 +922,7 @@ public final class TelegramConnector: ObservableObject {
         try? await client.send(unmatchedReply(handle, for: chat), to: chat)
         return
       }
-      await sendPrompt(text, to: bot, client: client, chat: chat)
+      await sendPrompt(text, to: bot, client: client, chat: chat, context: message.channelHeader)
     case .message(let prompt):
       // `@instagram100kcompany do this` is how Telegram users address a bot. A mention of
       // anyone else stays an ordinary message for this chat's bot, and the bare handle alone
@@ -878,7 +932,9 @@ public final class TelegramConnector: ObservableObject {
           activeBotByChatID[chat] = mention.bot.id
           try? await client.send(TelegramBotRouting.switchedReply(to: mention.bot), to: chat)
         } else {
-          await sendPrompt(mention.text, to: mention.bot, client: client, chat: chat)
+          await sendPrompt(
+            mention.text, to: mention.bot, client: client, chat: chat,
+            context: message.channelHeader)
         }
         return
       }
@@ -886,7 +942,7 @@ public final class TelegramConnector: ObservableObject {
         try? await client.send(noBotsMessage, to: chat)
         return
       }
-      await sendPrompt(prompt, to: bot, client: client, chat: chat)
+      await sendPrompt(prompt, to: bot, client: client, chat: chat, context: message.channelHeader)
     case .pair:
       try? await client.send("Already paired. Use /bots to choose a bot.", to: chat)
     }
@@ -896,14 +952,17 @@ public final class TelegramConnector: ObservableObject {
   /// bot's current run ends; the chat is told which. Nothing a person says is dropped because
   /// the bot happened to be busy.
   private func sendPrompt(
-    _ prompt: String, to bot: AgentProfile, client: TelegramBotTransport, chat: Int64
+    _ prompt: String, to bot: AgentProfile, client: TelegramBotTransport, chat: Int64,
+    context: String?
   ) async {
     guard let services, services.isOnline else {
       try? await client.send("Otto is not ready on your Mac.", to: chat)
       return
     }
     // Telegram content is untrusted input. It does not grant permission or approve
-    // a pending desktop action; those must still go through Otto's UI.
+    // a pending desktop action; those must still go through Otto's UI. Only the paired person's
+    // messages get this far, so their text reaches the bot as their own; `context` adds the
+    // channel header with its reply rules for this turn only.
     let waiting = queuedPrompts[bot.id] ?? []
     guard waiting.count < Self.maxQueuedPrompts else {
       try? await client.send(
@@ -912,8 +971,9 @@ public final class TelegramConnector: ObservableObject {
       return
     }
     // Only a run in progress is worth announcing; a queue being worked through is not one.
-    let busy = isBusy(bot)
-    queuedPrompts[bot.id] = waiting + [QueuedPrompt(text: prompt, chat: chat, client: client)]
+    let busy = isBusy(bot) || lateFollows[bot.id] != nil
+    queuedPrompts[bot.id] =
+      waiting + [QueuedPrompt(text: prompt, context: context, chat: chat, client: client)]
     if busy {
       try? await client.send(
         "Queued behind the current task. I'll send it when @\(bot.handle) is free.", to: chat)
@@ -932,11 +992,12 @@ public final class TelegramConnector: ObservableObject {
   }
 
   /// Works through a bot's queue on one task: waits until the bot is free, sends the oldest
-  /// message, follows that run so its answer reaches the chat (and so a "Still working" timeout
-  /// does not strand what is waiting), then repeats until nothing is waiting. A message the bot
-  /// cannot take is bounced on its own, quoting the text so the person can send it again, and
-  /// the rest are still tried. Nothing goes to the chat once the task is cancelled: the
-  /// connection it came in on may be gone.
+  /// message, follows that run so its answer reaches the chat, then repeats until nothing is
+  /// waiting. A run that outlasts `followWindow` is handed to a background follower that sends
+  /// its answer when it ends; the queue waits for the bot to be free and that answer to be picked
+  /// up, never for longer. A message the bot cannot take is bounced on its own, quoting the text
+  /// so the person can send it again, and the rest are still tried. Nothing goes to the chat once
+  /// the task is cancelled: the connection it came in on may be gone.
   private func pumpQueue(for bot: AgentProfile) {
     guard queuePumps[bot.id] == nil else { return }
     let pump = UUID()
@@ -948,7 +1009,7 @@ public final class TelegramConnector: ObservableObject {
       while !Task.isCancelled, let services = connector.services,
         let next = connector.queuedPrompts[bot.id]?.first
       {
-        if connector.isBusy(bot) {
+        if connector.isBusy(bot) || connector.lateFollows[bot.id] != nil {
           try? await Task.sleep(for: .seconds(2))
           continue
         }
@@ -959,7 +1020,8 @@ public final class TelegramConnector: ObservableObject {
           previousSnapshot?.transcript.filter { $0.role == .assistant }.map(\.id) ?? [])
         let opened: BotOpenOutput
         do {
-          opened = try await services.controlSendPrompt(to: bot.id.uuidString, prompt: next.text)
+          opened = try await services.controlSendPrompt(
+            to: bot.id.uuidString, prompt: next.text, hiddenContext: next.context)
         } catch RuntimeError.invalidTransition {
           // The bot took other work between the check and the send. Wait for that run instead.
           try? await Task.sleep(for: .seconds(2))
@@ -975,11 +1037,45 @@ public final class TelegramConnector: ObservableObject {
         guard !Task.isCancelled else { return }
         try? await next.client.send("Sent to @\(bot.handle). Working…", to: next.chat)
         guard !Task.isCancelled else { return }
-        await connector.follow(
+        let outcome = await connector.follow(
           agentID: opened.agentID, bot: bot, previousRunID: previousRunID,
-          previousAssistantIDs: previousAssistantIDs, client: next.client, chat: next.chat)
+          previousAssistantIDs: previousAssistantIDs, client: next.client, chat: next.chat,
+          window: connector.followWindow)
+        guard case .stillRunning(let runID) = outcome, !Task.isCancelled else { continue }
+        try? await next.client.send(Self.stillWorkingReply, to: next.chat)
+        connector.followLate(
+          agentID: opened.agentID, bot: bot, previousRunID: previousRunID, runID: runID,
+          previousAssistantIDs: previousAssistantIDs, request: next.text,
+          client: next.client, chat: next.chat)
       }
     }
+  }
+
+  static let stillWorkingReply = "Still working on it — I'll send the answer here when it's done."
+
+  /// Keeps following a run the chat was told is still working, for up to `lateFollowWindow`, and
+  /// sends its answer, labelled as the answer to the earlier request, when it ends. Cancelled with
+  /// the connection like any message task.
+  private func followLate(
+    agentID: UUID, bot: AgentProfile, previousRunID: UUID?, runID: UUID?,
+    previousAssistantIDs: Set<UUID>, request: String, client: TelegramBotTransport, chat: Int64
+  ) {
+    let follower = UUID()
+    lateFollows[bot.id] = follower
+    track { connector in
+      defer {
+        if connector.lateFollows[bot.id] == follower { connector.lateFollows[bot.id] = nil }
+      }
+      _ = await connector.follow(
+        agentID: agentID, bot: bot, previousRunID: previousRunID,
+        previousAssistantIDs: previousAssistantIDs, client: client, chat: chat,
+        window: connector.lateFollowWindow, late: (request: request, runID: runID))
+    }
+  }
+
+  /// The opening of a late answer, quoting the start of the request it answers.
+  nonisolated static func lateAnswerPrefix(for request: String) -> String {
+    "Here's the answer to your earlier request “\(excerpt(request))”:"
   }
 
   /// Quotes enough of the text for the person to find it and send it again.
@@ -990,19 +1086,30 @@ public final class TelegramConnector: ObservableObject {
   }
 
   /// Relays the opened agent's answer, never another bot's. While it waits for a tool approval,
-  /// the approval is offered here when the owner allowed that, and the wait is extended.
+  /// the approval is offered here when the owner allowed that, and the wait is extended. `late`
+  /// marks a follow after the chat heard "Still working": its answer names the request it
+  /// answers, and it only relays the answer of the run it was handed (`runID`), so a newer run
+  /// started on the Mac is never passed off as this one.
   private func follow(
     agentID: UUID, bot: AgentProfile, previousRunID: UUID?, previousAssistantIDs: Set<UUID>,
-    client: TelegramBotTransport, chat: Int64
-  ) async {
-    guard let services else { return }
-    var deadline = Date.now.addingTimeInterval(120)
+    client: TelegramBotTransport, chat: Int64, window: TimeInterval,
+    late: (request: String, runID: UUID?)? = nil
+  ) async -> FollowOutcome {
+    guard let services else { return .settled }
+    var deadline = Date.now.addingTimeInterval(window)
     var offeredRequestID: UUID?
     var deferredRequestID: UUID?
     while Date.now < deadline {
       try? await Task.sleep(for: .seconds(1))
-      if Task.isCancelled { return }
+      if Task.isCancelled { return .settled }
       guard let snapshot = services.fleetStore.snapshot(for: agentID) else { continue }
+      if let late, let runID = late.runID, let current = snapshot.runID, current != runID {
+        // Another run began before this one's end was seen; its answer is not this request's.
+        try? await client.send(
+          "@\(bot.handle) finished your earlier request “\(Self.excerpt(late.request))”. Open Otto on your Mac to see the result.",
+          to: chat)
+        return .settled
+      }
       let newAnswer = snapshot.transcript.reversed().first {
         $0.role == .assistant && $0.kind == .text && !$0.text.isEmpty
           && !previousAssistantIDs.contains($0.id)
@@ -1014,7 +1121,7 @@ public final class TelegramConnector: ObservableObject {
         else {
           try? await client.send(
             "@\(bot.handle) needs your approval in the Otto Mac app.", to: chat)
-          return
+          return .settled
         }
         guard Self.isAnswerableOnTelegram(pending) else {
           // No buttons: keep following so the answer still arrives once it is approved on the Mac.
@@ -1038,19 +1145,32 @@ public final class TelegramConnector: ObservableObject {
       if snapshot.state == .waitingUser {
         try? await client.send(
           "@\(bot.handle) has a question for you in the Otto Mac app.", to: chat)
-        return
+        return .settled
       }
       if [.done, .idle, .failed, .interrupted, .stopped].contains(snapshot.state) {
-        let answer = newAnswer ?? snapshot.result
-        try? await client.send(
+        let answer = (newAnswer ?? snapshot.result).map(ChatChannelReplyFormatter.plainText)
+        var reply =
           answer?.isEmpty == false
-            ? answer! : "Bot finished. Open Otto on your Mac to review the result.",
-          to: chat)
-        return
+          ? answer! : "Bot finished. Open Otto on your Mac to review the result."
+        if let late { reply = Self.lateAnswerPrefix(for: late.request) + "\n\n" + reply }
+        try? await client.send(reply, to: chat)
+        return .settled
       }
     }
-    try? await client.send(
-      "Still working. Check this bot in Otto on your Mac for the result.", to: chat)
+    if late != nil {
+      try? await client.send(
+        "@\(bot.handle) is still on your earlier request. Check it in Otto on your Mac.", to: chat)
+      return .settled
+    }
+    // A run that has not begun yet has no ID of its own to hold the late follow to.
+    let runID = services.fleetStore.snapshot(for: agentID)?.runID
+    return .stillRunning(runID: runID == previousRunID ? nil : runID)
+  }
+
+  private nonisolated static func excerpt(_ text: String) -> String {
+    let flat = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+      .trimmingCharacters(in: .whitespaces)
+    return flat.count > 60 ? String(flat.prefix(60)) + "…" : flat
   }
 
   private func offerApproval(
@@ -1133,6 +1253,7 @@ public final class TelegramConnector: ObservableObject {
       return
     }
     let caption = message.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let header = message.channelHeader
     // Downloading and transcribing can take minutes; polling must not wait for it.
     track { connector in
       let transcript: String
@@ -1150,7 +1271,7 @@ public final class TelegramConnector: ObservableObject {
       try? await client.send("🎙️ Heard: “\(transcript)”", to: chat)
       await connector.sendPrompt(
         caption.isEmpty ? transcript : "\(caption)\n\n\(transcript)", to: bot, client: client,
-        chat: chat)
+        chat: chat, context: header)
     }
   }
 
@@ -1180,8 +1301,9 @@ public final class TelegramConnector: ObservableObject {
     else { return }
     let chat = message.chat.id
     let caption = message.caption ?? ""
+    let header = message.channelHeader
     guard let album = message.mediaGroupID else {
-      deliver([media], caption: caption, client: client, chat: chat)
+      deliver([media], caption: caption, header: header, client: client, chat: chat)
       return
     }
     let key = "\(chat):\(album)"
@@ -1198,14 +1320,16 @@ public final class TelegramConnector: ObservableObject {
         album.generation == generation
       else { return }
       connector.pendingAlbums[key] = nil
-      connector.deliver(album.media, caption: album.caption, client: client, chat: chat)
+      connector.deliver(
+        album.media, caption: album.caption, header: header, client: client, chat: chat)
     }
   }
 
   /// Downloads the media into the workspace's chat attachments, takes stills (and, when voice
   /// notes are supported, the sound) from videos, and sends one prompt to the chosen bot.
   private func deliver(
-    _ media: [TelegramMedia], caption: String, client: TelegramBotTransport, chat: Int64
+    _ media: [TelegramMedia], caption: String, header: String, client: TelegramBotTransport,
+    chat: Int64
   ) {
     var bot = activeBot(for: chat)
     let route = TelegramMedia.route(caption: caption, botUsername: username)
@@ -1286,7 +1410,7 @@ public final class TelegramConnector: ObservableObject {
       }
       await connector.sendPrompt(
         TelegramMediaStore.prompt(caption: text, images: images, videos: videos), to: bot,
-        client: client, chat: chat)
+        client: client, chat: chat, context: header)
     }
   }
 }

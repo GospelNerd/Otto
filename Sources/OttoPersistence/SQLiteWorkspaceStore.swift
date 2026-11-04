@@ -1,7 +1,11 @@
 import Foundation
 import OttoModels
 import OttoTools
-import SQLite3
+#if canImport(SQLite3)
+  import SQLite3
+#else
+  import CSQLite
+#endif
 
 public enum PersistenceError: Error, LocalizedError {
   case openDatabase(String)

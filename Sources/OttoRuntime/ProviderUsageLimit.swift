@@ -67,14 +67,30 @@ public struct ProviderUsageLimit: Equatable, Sendable {
     {
       return Date(timeIntervalSince1970: seconds)
     }
-    // "try again in 2 hours 13 minutes", "resets in 45 minutes", "in 3h 5m"
+    // "try again in 2 hours 13 minutes", "resets in 45 minutes", "in 3h 5m".
+    // The first unit is captured and the second optional, joined by "and" or not. The old
+    // pattern made both groups optional, so "in 2 hours and 15 minutes" captured only the
+    // hours and dropped the minutes (7200s instead of 8100s), and a day — weekly limits say
+    // "in 3 days" — matched nothing and lost the reset time entirely, so the notice had no
+    // "wait and retry at…" to offer.
     if let match = lowered.firstMatch(
       of:
-        /(?:try again|resets?|available again)\s+in\s+(?:(\d+)\s*(?:hours?|hrs?|h)\b)?\s*(?:(\d+)\s*(?:minutes?|mins?|m)\b)?/
-    ), match.1 != nil || match.2 != nil {
-      let hours = Int(match.1.map(String.init) ?? "0") ?? 0
-      let minutes = Int(match.2.map(String.init) ?? "0") ?? 0
-      return now.addingTimeInterval(TimeInterval(hours * 3600 + minutes * 60))
+        /(?:try again|resets?|available again)\s+in\s+(\d+(?:[.,]\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m|days?|d)\b(?:\s*(?:and\s+)?(\d+(?:[.,]\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m|days?|d)\b)?/
+    ) {
+      var seconds = 0.0
+      for (amount, unit) in [(match.1, match.2), (match.3, match.4)] {
+        guard let amount, let unit else { continue }
+        guard let value = Double(amount.replacingOccurrences(of: ",", with: ".")) else {
+          return nil
+        }
+        switch unit.first {
+        case "h": seconds += value * 3600
+        case "m": seconds += value * 60
+        case "d": seconds += value * 86_400
+        default: return nil
+        }
+      }
+      return now.addingTimeInterval(seconds)
     }
     // "resets 2pm", "resets at 14:00", "try again at 3:05 PM"
     if let match = lowered.firstMatch(

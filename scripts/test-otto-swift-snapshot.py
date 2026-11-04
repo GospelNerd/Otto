@@ -53,5 +53,23 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual((dest / 'changed.swift').read_text(), 'edited')
 
 
+    def test_tracked_symlink_to_a_directory_is_staged_as_a_link(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, dest = root / 'repo', root / 'frozen.nosync'
+            (repo / '.agents' / 'skills' / 'design').mkdir(parents=True)
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            (repo / '.agents' / 'skills' / 'design' / 'SKILL.md').write_text('skill')
+            (repo / '.claude' / 'skills').mkdir(parents=True)
+            os.symlink('../../.agents/skills/design', repo / '.claude' / 'skills' / 'design')
+            subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
+            snapshot.stage(repo, dest)
+            staged = dest / '.claude' / 'skills' / 'design'
+            self.assertTrue(staged.is_symlink())
+            self.assertEqual(os.readlink(staged), '../../.agents/skills/design')
+            self.assertEqual((staged / 'SKILL.md').read_text(), 'skill')
+            snapshot.stage(repo, dest)
+            self.assertTrue(staged.is_symlink())
+
 if __name__ == '__main__':
     unittest.main()

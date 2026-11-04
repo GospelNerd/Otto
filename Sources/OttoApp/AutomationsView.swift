@@ -674,11 +674,15 @@ struct AutomationSchedule: Equatable {
   init?(cron: String) {
     let parts = cron.split(separator: " ").map(String.init)
     guard parts.count == 5, parts[2] == "*", parts[3] == "*" else { return nil }
-    if parts[1] == "*", let minute = Int(parts[0]) {
+    // The friendly editor only writes in-range values, but routines saved through agent tools
+    // carry arbitrary cron. Without the guard "5 24 * * *" parsed and round-tripped as
+    // "Every day at 24:05". The weekday field below is range-checked for the same reason.
+    guard let minute = Int(parts[0]), (0...59).contains(minute) else { return nil }
+    if parts[1] == "*" {
       self.init(frequency: .hourly, hour: 0, minute: minute)
       return
     }
-    guard let minute = Int(parts[0]), let hour = Int(parts[1]) else { return nil }
+    guard let hour = Int(parts[1]), (0...23).contains(hour) else { return nil }
     switch parts[4] {
     case "*": self.init(frequency: .daily, hour: hour, minute: minute)
     case "1-5": self.init(frequency: .weekdays, hour: hour, minute: minute)

@@ -16,7 +16,9 @@ public enum OrchestrationRunError: Error, Equatable {
 }
 
 /// The deliberately small orchestration pipe: one typed JSON record, updated only by explicit
-/// calls. There is no polling watchdog and no component invents follow-up prompts in the background.
+/// calls. Nothing supervises a run or invents follow-up prompts in the background. (The app-wide
+/// `AgentWatchdog` may flag an assignment's agent as stuck on Home, but it never touches this
+/// record or acts on the agent.)
 public actor OrchestrationRunStore {
   private let fileURL: URL
   private var run: OrchestrationRun?

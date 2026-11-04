@@ -461,7 +461,8 @@ public final class MessagingService: ObservableObject {
         !answer.text.contains("→ Handed to @"),
         !answer.text.localizedCaseInsensitiveContains("@user")
       {
-        job.reply = answer.text
+        // iMessage shows plain text: no diagrams, tables, details divider or cards.
+        job.reply = ChatChannelReplyFormatter.plainText(answer.text)
         job.state = .ready
       } else {
         job.state = .uncertain

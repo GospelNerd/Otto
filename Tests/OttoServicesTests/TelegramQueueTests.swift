@@ -122,6 +122,110 @@ extension TelegramMediaDeliveryTests {
   }
 }
 
+extension TelegramMediaDeliveryTests {
+  @Test("The bot's turn carries the Telegram channel header; the Mac chat shows the text")
+  func channelHeaderReachesTheBot() async throws {
+    let harness = try await TelegramQueueHarness.make(updates: TelegramQueueHarness.textUpdates([]))
+    defer { harness.tearDown() }
+    // The fixture bot is a shell, whose input is never wrapped in context, so record the one-turn
+    // context Otto hands the provider instead of reading it back from the shell.
+    let handed = HandedChannelContext()
+    await harness.services.supervisor.setTurnContextProvider {
+      [weak services = harness.services] id, _ in
+      await handed.record(await services?.takeNextTurnContext(nodeID: id))
+      return nil
+    }
+    harness.api.serve(TelegramQueueHarness.textUpdates(["what is on today"]))
+    try await waitUntil(timeout: .seconds(60), describe: harness.describe) {
+      await harness.userPrompts() == ["what is on today"]
+        && harness.providerInput.contains("what is on today")
+    }
+    let context = await handed.values.compactMap { $0 }.joined(separator: "\n")
+    #expect(
+      context.contains(
+        ChatChannelReplyFormatter.inboundHeader(channel: .telegram, sender: "Max")))
+    #expect(!harness.providerInput.contains("[Otto · via Telegram"))
+    try harness.finishRun()
+    try await waitUntil(timeout: .seconds(30), describe: harness.describe) {
+      harness.api.sentMessages.contains("Done")
+    }
+    await harness.shutdown()
+  }
+
+  @Test("A run that outlasts the wait sends its answer later; the next message still goes after")
+  func lateAnswerArrivesAndQueueContinues() async throws {
+    let harness = try await TelegramQueueHarness.make(
+      updates: TelegramQueueHarness.textUpdates(["first message"]), followWindow: 2)
+    defer { harness.tearDown() }
+    let bot = harness.bot
+    let sent = "Sent to @\(bot.handle). Working…"
+    let still = TelegramConnector.stillWorkingReply
+    func late(_ request: String) -> String {
+      TelegramConnector.lateAnswerPrefix(for: request) + "\n\nDone"
+    }
+
+    try await waitUntil(timeout: .seconds(60), describe: harness.describe) {
+      harness.api.sentMessages.contains(still) && harness.isWorking
+    }
+    #expect(harness.connector.isFollowingLate(bot.id))
+    #expect(!harness.api.sentMessages.contains("Done"))
+
+    // A second message arrives while the late follow is on: it waits behind the run.
+    harness.api.serve(TelegramQueueHarness.textUpdates(["second message"], from: 2))
+    try await waitUntil(timeout: .seconds(30), describe: harness.describe) {
+      harness.connector.queuedTexts(for: bot.id) == ["second message"]
+        && harness.api.sentMessages.contains { $0.hasPrefix("Queued behind") }
+    }
+    try await Task.sleep(for: .seconds(1))
+    #expect(await harness.userPrompts() == ["first message"])
+
+    // The first run ends: its answer arrives labelled as the earlier request's, then the second
+    // message goes.
+    try harness.finishRun()
+    try await waitUntil(timeout: .seconds(30), describe: harness.describe) {
+      await harness.userPrompts() == ["first message", "second message"]
+        && harness.api.sentMessages.filter { $0 == sent }.count == 2
+    }
+    var messages = harness.api.sentMessages
+    let firstLate = try #require(messages.firstIndex(of: late("first message")))
+    #expect(firstLate < (try #require(messages.lastIndex(of: sent))))
+    #expect(!messages.contains("Done"))
+
+    // The second run also outlasts the wait; its late answer names the second message only.
+    try await waitUntil(timeout: .seconds(30), describe: harness.describe) {
+      harness.api.sentMessages.filter { $0 == still }.count == 2
+    }
+    try harness.finishRun()
+    try await waitUntil(timeout: .seconds(30), describe: harness.describe) {
+      harness.api.sentMessages.contains(late("second message"))
+    }
+    messages = harness.api.sentMessages
+    #expect(messages.filter { $0 == late("first message") }.count == 1)
+    #expect(messages.filter { $0.hasPrefix("Here's the answer") }.count == 2)
+    try await waitUntil(timeout: .seconds(10), describe: harness.describe) {
+      !harness.connector.isFollowingLate(bot.id)
+    }
+    await harness.shutdown()
+  }
+
+  @Test("Stopping the connector ends a late follow without sending anything more")
+  func stopEndsLateFollow() async throws {
+    let harness = try await TelegramQueueHarness.make(
+      updates: TelegramQueueHarness.textUpdates(["first message"]), followWindow: 2)
+    defer { harness.tearDown() }
+    try await waitUntil(timeout: .seconds(60), describe: harness.describe) {
+      harness.api.sentMessages.contains(TelegramConnector.stillWorkingReply)
+    }
+    harness.connector.stop()
+    #expect(!harness.connector.isFollowingLate(harness.bot.id))
+    let sentBefore = harness.api.sentMessages.count
+    try harness.finishRun()
+    try await Task.sleep(for: .seconds(3))
+    #expect(harness.api.sentMessages.count == sentBefore)
+    await harness.shutdown()
+  }
+}
+
 /// One allowed bot whose node is a plain shell, so the test runs on Macs without Codex or Claude
 /// Code. When launchable, the shell stays busy after each prompt until the test ends the run by
 /// creating a file. Otherwise the node has never run and cannot be launched.
@@ -138,7 +242,9 @@ struct TelegramQueueHarness {
 
   static let chatID: Int64 = 123
 
-  static func make(updates: String, launchable: Bool = true) async throws -> TelegramQueueHarness {
+  static func make(
+    updates: String, launchable: Bool = true, followWindow: TimeInterval? = nil
+  ) async throws -> TelegramQueueHarness {
     let root = FileManager.default.temporaryDirectory.appending(path: "tg-queue-\(UUID())")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
@@ -162,6 +268,7 @@ struct TelegramQueueHarness {
 
     let connector = TelegramConnector(
       services: services, secrets: InMemorySecretStore(), defaults: defaults)
+    if let followWindow { connector.followWindow = followWindow }
     await connector.connect(token: api.token)
     #expect(connector.username == "ottotestbot")
     return TelegramQueueHarness(
@@ -201,7 +308,7 @@ struct TelegramQueueHarness {
           sleep 0.1
         done ) &
       printf 'OTTO_STATUS:IDLE\\r\\n'
-      while IFS= read -r line; do :; done
+      while IFS= read -r line; do printf '%s\n' "$line" >> '\(root.appending(path: "stdin.log").path)'; done
       """
     _ = try await services.supervisor.spawn(
       provider: .shell,
@@ -222,7 +329,8 @@ struct TelegramQueueHarness {
     let items = texts.enumerated().map { index, text in
       """
       {"update_id":\(firstID + index),"message":{"message_id":\(firstID + index + 10),
-        "chat":{"id":\(chatID),"type":"private"},"from":{"id":\(chatID),"is_bot":false},
+        "chat":{"id":\(chatID),"type":"private"},
+        "from":{"id":\(chatID),"is_bot":false,"first_name":"Max"},
         "text":"\(text)"}}
       """
     }
@@ -232,6 +340,11 @@ struct TelegramQueueHarness {
   /// Ends the bot's current run; the shell reports a result and DONE within a moment.
   func finishRun() throws {
     try Data().write(to: root.appending(path: "finish"))
+  }
+
+  /// Everything the bot's process has been sent, as it received it.
+  var providerInput: String {
+    (try? String(contentsOf: root.appending(path: "stdin.log"), encoding: .utf8)) ?? ""
   }
 
   /// Whether the connector would see the bot as busy: its fleet snapshot is on a run.
@@ -260,4 +373,9 @@ struct TelegramQueueHarness {
     defaults.removePersistentDomain(forName: suite)
     try? FileManager.default.removeItem(at: root)
   }
+}
+
+private actor HandedChannelContext {
+  private(set) var values: [String?] = []
+  func record(_ value: String?) { values.append(value) }
 }

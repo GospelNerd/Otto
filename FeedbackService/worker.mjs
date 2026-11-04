@@ -124,9 +124,12 @@ export function sanitizeMarkdown(text) {
 export function issueTitle(report) {
   const source = report.title || report.description.split('\n').find((line) => line.trim()) || '';
   let line = sanitizeMarkdown(source.replace(/[\r\n]+/g, ' ')).replace(/\s+/g, ' ').replace(/^#+\s*/, '').trim();
-  const characters = [...line];
-  if (characters.length > limits.issueTitle) line = characters.slice(0, limits.issueTitle - 1).join('').trimEnd() + '…';
-  return `${kinds[report.kind].prefix} ${line || 'Feedback from the Otto app'}`;
+  // The cap covers the title GitHub shows, prefix included: capping only the body and appending
+  // `[Bug] ` afterwards let 80-character titles reach 86.
+  const prefixed = `${kinds[report.kind].prefix} ${line || 'Feedback from the Otto app'}`;
+  const characters = [...prefixed];
+  if (characters.length > limits.issueTitle) return characters.slice(0, limits.issueTitle - 1).join('').trimEnd() + '…';
+  return prefixed;
 }
 
 /** The issue body. Never includes the install ID or anything about the sender's network. */

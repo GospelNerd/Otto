@@ -330,15 +330,16 @@ struct WorkspaceView: View {
           }
           id = sessionID
         }
+        // Leave Home as soon as the destination exists. Optional snapshot work must not
+        // strand the person behind a disabled Home composer while the turn is prepared.
+        openHomeAgent(id)
         do {
           try await services.sendPrompt(agentID: id, prompt: prompt)
         } catch {
           await services.recordConversationSendFailure(agentID: id, prompt: prompt, error: error)
-          openHomeAgent(id)
           conversationError = error.localizedDescription
           return
         }
-        openHomeAgent(id)
       }
     )
     .ignoresSafeArea(.container, edges: .top)

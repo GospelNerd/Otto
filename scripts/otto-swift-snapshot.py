@@ -35,7 +35,7 @@ def stage(repository, destination):
         source, target = repository / relative, destination / relative
         if not source.exists() and not source.is_symlink():
             continue  # A tracked deletion must also disappear from the snapshot.
-        if source.is_dir():
+        if source.is_dir() and not source.is_symlink():
             raise ValueError(f'Build snapshots require ordinary files, found directory: {name}')
         source_stamp = fingerprint(source)
         old = cached.get(name)

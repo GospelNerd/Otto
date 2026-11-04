@@ -94,6 +94,9 @@ fi
   find Sources/OttoCommercial Sources/OttoModels Sources/OttoRPCContracts Sources/OttoMobileClient \
     -type f -name '*.swift' -print0
   find Apps/OttoMobileApp -type f -print0
+  # System library targets need their real module map, not a Swift placeholder, or package
+  # resolution fails with "missing system target module map". The iPhone build never links it.
+  find Sources/CSQLite -type f -print0
 ) | /usr/bin/rsync -a --from0 --files-from=- "$REPO_ROOT/" "$SOURCE_SNAPSHOT/"
 
 PLACEHOLDER="$SOURCE_SNAPSHOT/scripts/fixtures/OttoMobilePackagePlaceholder.swift"

@@ -1,6 +1,10 @@
 import Foundation
 import OttoTools
-import SQLite3
+#if canImport(SQLite3)
+  import SQLite3
+#else
+  import CSQLite
+#endif
 
 /// One row of the append-only audit chain. Every tool action by every actor — agents, voice,
 /// the app itself — lands here permanently, so "who did what" survives restarts and is

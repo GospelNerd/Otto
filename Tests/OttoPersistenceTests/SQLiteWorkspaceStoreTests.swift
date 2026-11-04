@@ -154,7 +154,7 @@ struct SQLiteWorkspaceStoreTests {
       Bundle.module.url(
         forResource: "schema-v1", withExtension: "sql", subdirectory: "Fixtures"))
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.executableURL = sqlite3Executable
     process.arguments = [path.path]
     process.standardInput = try FileHandle(forReadingFrom: fixture)
     try process.run()
@@ -175,7 +175,7 @@ struct SQLiteWorkspaceStoreTests {
       .appending(path: "otto-future-schema-\(UUID().uuidString).sqlite")
     defer { try? FileManager.default.removeItem(at: path) }
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.executableURL = sqlite3Executable
     process.arguments = [
       path.path,
       "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES(99, 'future');",
@@ -220,7 +220,7 @@ struct SQLiteWorkspaceStoreTests {
     let process = Process()
     let input = Pipe()
     let output = Pipe()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.executableURL = sqlite3Executable
     process.arguments = [path.path]
     process.standardInput = input
     process.standardOutput = output
@@ -293,3 +293,8 @@ private struct PersistenceEchoTool: OttoTool {
     PersistenceEchoOutput(text: input.text)
   }
 }
+
+/// The sqlite3 CLI used to build legacy fixtures. Hosts without /usr/bin/sqlite3 (for example a
+/// rootless Linux box) can point OTTO_TEST_SQLITE3 at another binary.
+private let sqlite3Executable = URL(
+  fileURLWithPath: ProcessInfo.processInfo.environment["OTTO_TEST_SQLITE3"] ?? "/usr/bin/sqlite3")

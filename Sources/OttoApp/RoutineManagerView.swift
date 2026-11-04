@@ -300,6 +300,7 @@ struct RoutineManagerView: View {
           ForEach(routines.recentRuns(routineID: current.id, limit: 10)) { run in
             HStack {
               Text(run.outcome.rawValue.uppercased()).font(.ottoMono(8, weight: .bold))
+              if run.retryOfRunID != nil { Text("RETRY").font(.ottoMono(8, weight: .bold)) }
               Text(run.firedAt.formatted())
               Spacer()
               Text(run.error ?? "").lineLimit(1)

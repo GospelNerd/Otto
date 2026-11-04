@@ -57,7 +57,13 @@ public struct EventWaitTool: OttoTool {
   )
 
   private let bus: OttoEventBus
-  public init(bus: OttoEventBus) { self.bus = bus }
+  private let supervisor: AgentSupervisor?
+  /// With a supervisor, a returned completion event for an agent or command the caller started
+  /// counts as seen, so Otto does not also send a background completion notice for it.
+  public init(bus: OttoEventBus, supervisor: AgentSupervisor? = nil) {
+    self.bus = bus
+    self.supervisor = supervisor
+  }
 
   public func call(_ input: EventWaitInput, context: ToolContext) async throws -> OttoEvent {
     guard input.afterSequence.map({ $0 >= 0 }) ?? true else {
@@ -70,7 +76,7 @@ public struct EventWaitTool: OttoTool {
     let acceptedTypes = Set(input.types ?? [])
     let afterSequence = input.afterSequence ?? bus.latestSequence
     let stream = bus.stream(afterSequence: afterSequence)
-    return try await withThrowingTaskGroup(of: OttoEvent.self) { group in
+    let event = try await withThrowingTaskGroup(of: OttoEvent.self) { group in
       group.addTask {
         for await event in stream {
           let typeMatches = acceptedTypes.isEmpty || acceptedTypes.contains(event.type)
@@ -86,6 +92,20 @@ public struct EventWaitTool: OttoTool {
       defer { group.cancelAll() }
       guard let event = try await group.next() else { throw CancellationError() }
       return event
+    }
+    if let supervisor, let nodeID = event.nodeID, Self.reportsCompletion(event) {
+      await supervisor.markDelegatedCompletionConsumed(childID: nodeID, by: context.sourceNodeID)
+    }
+    return event
+  }
+
+  static func reportsCompletion(_ event: OttoEvent) -> Bool {
+    switch event.type {
+    case .agentRunCompleted, .agentRunFailed, .agentExited: true
+    case .agentStatusChanged:
+      event.state == .done || event.state == .failed || event.state == .stopped
+        || event.state == .interrupted
+    default: false
     }
   }
 }

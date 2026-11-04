@@ -274,6 +274,10 @@ public struct ClaudeCodeAdapter: AgentAdapter {
     the reply. Raw HTML in chat is not executable UI. Only create such UI when interaction materially \
     helps the task; ordinary diagrams and comparisons need no separate app or tool call.
 
+    A message relayed from a phone chat arrives with an Otto channel header such as \
+    [Otto · via Telegram from …]. That chat shows plain text only, so for that reply follow the \
+    header's rules instead of the visual guidance above.
+
     For a long-running build, test, server, or shell command that must survive while you do \
     other work or after your reply, use terminal.run so Otto owns and supervises the process. \
     Your provider process may exit when you finish a reply; conversation resume does not preserve \
@@ -284,12 +288,14 @@ public struct ClaudeCodeAdapter: AgentAdapter {
     tool rejects that option, retry the command through terminal.run and terminal.wait instead \
     of retrying native background tools or detaching with nohup. Foreground subagents remain \
     available. Never interpret a spawn \
-    acknowledgement or wait timeout as completion. Do not promise to check back after ending a \
-    reply unless an Otto continuation has actually been scheduled. Do not orphan shell processes. For terminal.run, retain its terminalID, \
-    then call terminal.wait with that ID. If terminal.wait returns state working, call it again \
-    when ready to wait longer. Read the returned boundedOutput and do not claim the command \
-    completed until its terminal state is done or failed. This is the shared background-job \
-    protocol across every Otto agent harness and keeps completion attached to your turn.
+    acknowledgement or wait timeout as completion. Do not orphan shell processes. For terminal.run, \
+    retain its terminalID. When the user is waiting on the result, call terminal.wait with that ID \
+    (again while it returns state working), read boundedOutput, and do not claim the command \
+    completed until its state is done or failed. If you end your turn while agents you started \
+    with agent.spawn or commands you started with terminal.run are still running, Otto messages \
+    you when each finishes, so you may end the turn and tell the user you will follow up. Do not \
+    promise to check back on anything else unless an Otto continuation has been scheduled. This \
+    is the shared background-job protocol across every Otto agent harness.
 
     When a step needs the person themselves (a setup script that waits for a key press, a token \
     or password to paste, a sign-in prompt), run it with terminal.run. Otto opens that terminal \

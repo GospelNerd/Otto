@@ -1,6 +1,7 @@
 import AppKit
 import OttoCore
 import OttoModels
+import OttoRuntime
 import OttoServices
 import SwiftUI
 
@@ -179,8 +180,16 @@ struct PersonalHomeView: View {
       return !attention.contains { $0.nodeID == nodeID }
     }
   }
+  /// Agents the watchdog flags as stuck or looping that are not already waiting on a decision.
+  private var stuckAgents: [AgentWatchdogFinding] {
+    services.watchdogFindings.values
+      .filter { finding in
+        finding.kind != .waitingOnPerson && !attention.contains { $0.nodeID == finding.agentID }
+      }
+      .sorted { $0.since < $1.since }
+  }
   private var attentionCount: Int {
-    attention.count + recordedAttention.count
+    attention.count + stuckAgents.count + recordedAttention.count
       + services.homeReviews.onHome.filter(\.needsPerson).count
   }
 
@@ -594,6 +603,7 @@ struct PersonalHomeView: View {
     case .openAgent(let id): openAgent(id)
     case .openActivity: openLibrary(.activity)
     case .openRoutine: openLibrary(.routines)
+    case .stopAgent(let id): Task { try? await services.stop(agentID: id) }
     case .openURL(let raw):
       if let url = URL(string: raw), url.scheme == "https" { NSWorkspace.shared.open(url) }
     }
@@ -813,8 +823,8 @@ struct PersonalHomeView: View {
           } label: {
             VStack(alignment: .leading, spacing: 4) {
               Text(agentName(item.nodeID)).font(.ottoDisplay(12).weight(.medium))
-              Text(item.reason).font(.ottoDisplay(11)).foregroundStyle(cardPalette.muted).lineLimit(
-                2)
+              Text(attentionReason(item)).font(.ottoDisplay(11)).foregroundStyle(cardPalette.muted)
+                .lineLimit(2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -822,6 +832,9 @@ struct PersonalHomeView: View {
           .buttonStyle(.plain)
           .accessibilityLabel("Review \(agentName(item.nodeID))")
         }
+      }
+      ForEach(stuckAgents.prefix(max(0, 3 - attention.count))) { finding in
+        stuckAgentRow(finding)
       }
       let waitingReviews = services.homeReviews.onHome.filter(\.needsPerson).count
       if waitingReviews > 0 {
@@ -896,6 +909,35 @@ struct PersonalHomeView: View {
     }
     .foregroundStyle(palette.paper.opacity(0.8))
     .shadow(color: palette.textHalo, radius: 6)
+  }
+
+  private func attentionReason(_ item: AgentAttentionItem) -> String {
+    guard let finding = services.watchdogFindings[item.nodeID], finding.kind == .waitingOnPerson
+    else { return item.reason }
+    return "\(finding.reason). \(item.reason)"
+  }
+
+  private func stuckAgentRow(_ finding: AgentWatchdogFinding) -> some View {
+    Button {
+      openAgent(finding.agentID)
+    } label: {
+      VStack(alignment: .leading, spacing: 4) {
+        Text(agentName(finding.agentID)).font(.ottoDisplay(12).weight(.medium))
+        Text("\(finding.reason). Open the chat to check on it.")
+          .font(.ottoDisplay(11)).foregroundStyle(cardPalette.muted).lineLimit(2)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .contextMenu {
+      Button("Open chat") { openAgent(finding.agentID) }
+      Button("Stop it") {
+        let id = finding.agentID
+        Task { try? await services.stop(agentID: id) }
+      }
+    }
+    .accessibilityLabel("Check on \(agentName(finding.agentID))")
   }
 
   private func agentName(_ id: UUID) -> String {

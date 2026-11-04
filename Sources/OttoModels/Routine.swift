@@ -196,12 +196,14 @@ public struct RoutineRunRecord: Codable, Identifiable, Sendable, Equatable {
   public var collapsedMissedRuns: Bool
   /// The agent's answer (trimmed), so a run's output can be read without opening its session.
   public var result: String?
+  /// Set on an automatic retry: the failed run it repeats. Absent in older history.
+  public var retryOfRunID: UUID?
 
   public init(
     runID: UUID = UUID(), routineID: UUID, triggerSummary: String,
     payloadDigest: String? = nil, firedAt: Date = .now, agentNodeID: UUID? = nil,
     outcome: RoutineRunOutcome, durationMs: Double? = nil, error: String? = nil,
-    collapsedMissedRuns: Bool = false, result: String? = nil
+    collapsedMissedRuns: Bool = false, result: String? = nil, retryOfRunID: UUID? = nil
   ) {
     self.runID = runID
     self.routineID = routineID
@@ -214,6 +216,7 @@ public struct RoutineRunRecord: Codable, Identifiable, Sendable, Equatable {
     self.error = error
     self.collapsedMissedRuns = collapsedMissedRuns
     self.result = result
+    self.retryOfRunID = retryOfRunID
   }
 }
 

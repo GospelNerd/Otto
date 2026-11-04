@@ -1394,6 +1394,11 @@ private func fallbackEvents(_ line: String) -> [ParsedAgentEvent] {
   if normalized.contains("what would you like") || normalized.contains("need your input") {
     return [.waitingForUser(line), .state(.waitingUser, confidence: 0.7)]
   }
+  // A dead provider's auth failure is prose, not a prompt: the sign-in is answered outside Otto.
+  // Read it as a failed run needing re-authentication, not the working idle screen behind it.
+  if normalized.contains("failed to authenticate") || normalized.contains("oauth session expired") {
+    return [.diagnostic(line), .state(.failed, confidence: 0.8)]
+  }
   if normalized.contains("context") && normalized.contains("exhaust") {
     return [.diagnostic(line), .state(.failed, confidence: 0.8)]
   }

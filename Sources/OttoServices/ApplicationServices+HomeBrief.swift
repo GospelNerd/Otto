@@ -26,17 +26,24 @@ extension ApplicationServices {
       liveAttentionNodes.insert(attention.nodeID)
       let name = nodeName(attention.nodeID) ?? "Your assistant"
       let asking = attention.state == .waitingUser
+      let reason =
+        asking
+        ? (Self.briefSnippet(attention.reason) ?? "Open the chat to reply.")
+        : "It paused before doing something that needs your permission. Open the chat to allow or decline."
       items.append(
         BriefItem(
           id: "attention:\(attention.nodeID)", kind: .todo,
           title: asking ? "\(name) has a question for you" : "\(name) needs your OK",
-          reason: asking
-            ? (Self.briefSnippet(attention.reason) ?? "Open the chat to reply.")
-            : "It paused before doing something that needs your permission. Open the chat to allow or decline.",
+          reason: watchdogWaitingNote(nodeID: attention.nodeID).map { "\($0) \(reason)" }
+            ?? reason,
           source: name, needsYou: true,
           projectID: projectID(forNode: attention.nodeID), origin: .otto,
           action: .openAgent(attention.nodeID), createdAt: attention.createdAt))
     }
+
+    // Agents the watchdog flags as stuck or looping. A live question or approval already has
+    // its own line, so the same agent is not listed twice.
+    items += watchdogBriefItems(excluding: liveAttentionNodes, nodeName: nodeName)
 
     for activity in botActivity.items {
       let nodeID: UUID? = {

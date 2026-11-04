@@ -1,9 +1,84 @@
 import Foundation
-import OttoWorktrees
 import Testing
+
+@testable import OttoWorktrees
 
 @Suite("Turn checkpoints")
 struct TurnCheckpointsTests {
+  @Test("A stalled snapshot is bounded, cleaned up, and does not block the next capture")
+  func stalledSnapshotTimesOut() async throws {
+    let repo = try TemporaryRepo()
+    defer { repo.cleanup() }
+    try repo.write("tracked.txt", "committed\n")
+    try repo.commitAll("base")
+    try repo.write("tracked.txt", "staged\n")
+    try repo.git(["add", "tracked.txt"])
+    try repo.write("tracked.txt", "unstaged\n")
+    let indexBefore = try Data(contentsOf: URL(fileURLWithPath: repo.file(".git/index")))
+    let headBefore = try repo.git(["rev-parse", "HEAD"])
+    // Use exec so the deliberately uncooperative helper is the exact process being killed.
+    // The marker and wrapper live outside the work tree and cannot enter a snapshot.
+    let helper = URL(fileURLWithPath: repo.path).appendingPathExtension("helper")
+    try FileManager.default.createDirectory(at: helper, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: helper) }
+    let marker = helper.appendingPathComponent("stall")
+    try Data().write(to: marker)
+    let executable = helper.appendingPathComponent("git")
+    try """
+    #!/bin/sh
+    if [ "$1" = add ] && [ -f '\(marker.path)' ]; then
+      echo $$ > '\(helper.path)/pid'
+      touch "$GIT_INDEX_FILE.lock"
+      trap '' TERM
+      exec /bin/sleep 30
+    fi
+    exec /usr/bin/git "$@"
+    """.write(to: executable, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+    let checkpoints = TurnCheckpointStore(gitExecutable: executable, checkpointTimeout: 0.8)
+    let clock = ContinuousClock()
+    let start = clock.now
+    await #expect(throws: TurnCheckpointError.self) {
+      try await checkpoints.captureCheckpoint(in: repo.path, agentID: UUID())
+    }
+    #expect(start.duration(to: clock.now) < .seconds(3))
+    let pid = try #require(
+      Int32(
+        String(contentsOf: helper.appendingPathComponent("pid"), encoding: .utf8)
+          .trimmingCharacters(in: .whitespacesAndNewlines)))
+    // The killed child must have been reaped, rather than left running in the background.
+    #expect(kill(pid, 0) == -1)
+    #expect(try Data(contentsOf: URL(fileURLWithPath: repo.file(".git/index"))) == indexBefore)
+    #expect(try repo.git(["rev-parse", "HEAD"]) == headBefore)
+    #expect(try String(contentsOfFile: repo.file("tracked.txt"), encoding: .utf8) == "unstaged\n")
+    #expect(
+      try FileManager.default.contentsOfDirectory(atPath: repo.file(".git"))
+        .allSatisfy { !$0.hasPrefix("otto-checkpoint-index-") })
+
+    try FileManager.default.removeItem(at: marker)
+    #expect(try await checkpoints.captureCheckpoint(in: repo.path, agentID: UUID()) != nil)
+  }
+
+  @Test("Git output larger than a pipe buffer cannot deadlock checkpoint capture")
+  func drainsBothOutputStreams() async throws {
+    let repo = try TemporaryRepo()
+    defer { repo.cleanup() }
+    try repo.commitAll("base")
+    let executable = URL(fileURLWithPath: repo.path).appendingPathExtension("git")
+    defer { try? FileManager.default.removeItem(at: executable) }
+    try """
+    #!/bin/sh
+    if [ "$1" = add ]; then
+      /usr/bin/head -c 131072 /dev/zero >&2
+      /usr/bin/head -c 131072 /dev/zero
+    fi
+    exec /usr/bin/git "$@"
+    """.write(to: executable, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+    let checkpoints = TurnCheckpointStore(gitExecutable: executable, checkpointTimeout: 2)
+    #expect(try await checkpoints.captureCheckpoint(in: repo.path, agentID: UUID()) != nil)
+  }
+
   @Test("A turn's edits, additions, and deletions are summarized between checkpoints")
   func summarizesTurn() async throws {
     let repo = try TemporaryRepo()

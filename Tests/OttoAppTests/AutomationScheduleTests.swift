@@ -24,4 +24,19 @@ struct AutomationScheduleTests {
     #expect(AutomationSchedule(cron: "*/5 * 1 * *") == nil)
     #expect(AutomationSchedule(cron: "nonsense") == nil)
   }
+
+  @Test("Out-of-range clock values are rejected, not echoed back")
+  func clockRanges() throws {
+    // The friendly editor only ever writes in-range values, but a routine saved from an agent
+    // tool can carry any cron. Without a guard, "5 24 * * *" parsed as "Every day at 24:05" and
+    // the editor round-tripped it back to the same invalid cron; the store's CronExpression
+    // validator then refused every save that touched the routine.
+    #expect(AutomationSchedule(cron: "5 24 * * *") == nil)
+    #expect(AutomationSchedule(cron: "99 9 * * *") == nil)
+    #expect(AutomationSchedule(cron: "60 9 * * *") == nil)
+    #expect(AutomationSchedule(cron: "30 23 * * *") != nil)
+    #expect(AutomationSchedule(cron: "0 0 * * *") != nil)
+    // The weekday field has always been range-checked here; clock values were missed.
+    #expect(AutomationSchedule(cron: "30 7 * * 8") == nil)
+  }
 }

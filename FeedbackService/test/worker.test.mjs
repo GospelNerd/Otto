@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker, {issueBody, issueTitle, sanitizeMarkdown, screenshotPath, validate} from '../worker.mjs';
+import worker, {issueBody, issueTitle, limits, sanitizeMarkdown, screenshotPath, validate} from '../worker.mjs';
 
 const installID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
 const token = 'github_pat_TESTTOKEN_never_in_output';
@@ -122,7 +122,9 @@ test('titles are prefixed, single-line and capped', () => {
   assert.equal(issueTitle(validate(report())), '[Bug] Sidebar freezes');
   assert.equal(issueTitle(validate(report({kind: 'idea', title: '', description: '\n\nDark mode for docs\nplease and thanks'}))), '[Idea] Dark mode for docs');
   const long = issueTitle(validate(report({title: 'word '.repeat(22)})));
-  assert.ok([...long].length <= '[Bug] '.length + 80);
+  // The cap covers the full title GitHub shows, the `[Bug] ` prefix included — the bound the
+  // README and the function's doc comment both promise.
+  assert.ok([...long].length <= limits.issueTitle);
   assert.ok(long.endsWith('…'));
   assert.equal(issueTitle(validate(report({title: 'ping @maxtrigify <b>x</b>'}))), '[Bug] ping @‍maxtrigify x');
 });

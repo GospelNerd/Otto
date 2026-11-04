@@ -87,6 +87,12 @@ public actor AgentSupervisor {
     let parentRunID: UUID?
     let name: String
     let kind: String
+    /// How many times the child has moved from active work into a final state, and how many of
+    /// those completions the parent has already seen (by waiting or reading the result) or been
+    /// sent a notice about. A count rather than a run ID because interactive input reuses the
+    /// run ID while still producing a fresh completion.
+    var completions = 0
+    var handledCompletions = 0
   }
   private var delegatedChildren: [UUID: DelegatedChild] = [:]
 
@@ -94,10 +100,73 @@ public actor AgentSupervisor {
   public func registerDelegatedChild(
     parentID: UUID, childID: UUID, name: String, kind: String = "agent"
   ) {
-    guard parentID != childID, let parent = agents[parentID], agents[childID] != nil else { return }
-    delegatedChildren[childID] = DelegatedChild(
+    guard parentID != childID, let parent = agents[parentID], let child = agents[childID]
+    else { return }
+    var relation = DelegatedChild(
       parentID: parentID, parentRunID: parent.snapshot.runID, name: name, kind: kind)
+    // A quick command can exit before the spawning tool registers it.
+    if Self.isFinal(child.snapshot.state) { relation.completions = 1 }
+    delegatedChildren[childID] = relation
     refreshDelegatingParent(childID)
+  }
+
+  /// The agent that started `childID` through an Otto tool, when there is one.
+  public func delegatingParentID(of childID: UUID) -> UUID? {
+    delegatedChildren[childID]?.parentID
+  }
+
+  /// Records that the delegating parent has already seen the child's current completion inside
+  /// its own turn, so no background completion notice is sent for it. Reads by anyone other than
+  /// the parent, and reads while the child is still running, change nothing.
+  public func markDelegatedCompletionConsumed(childID: UUID, by readerID: UUID?) {
+    guard var relation = delegatedChildren[childID], relation.parentID == readerID,
+      let child = agents[childID], Self.isFinal(child.snapshot.state)
+    else { return }
+    relation.handledCompletions = relation.completions
+    delegatedChildren[childID] = relation
+  }
+
+  /// Hands over the completions the parent has not yet seen, marking them handled. Returns
+  /// nothing while the parent is busy, so completions accumulate into one batch for its next
+  /// idle moment. A parent that was stopped, failed, interrupted or removed is never woken: its
+  /// pending completions are dropped instead.
+  public func takeDelegatedCompletions(parentID: UUID) -> [DelegatedCompletion] {
+    let parentState = agents[parentID]?.snapshot.state
+    let deliverable = parentState == .idle || parentState == .done
+    let discard =
+      parentState == nil || parentState == .failed || parentState == .stopped
+      || parentState == .interrupted
+    guard deliverable || discard else { return [] }
+    var completions: [DelegatedCompletion] = []
+    for (id, relation) in delegatedChildren.sorted(by: { $0.key.uuidString < $1.key.uuidString })
+    where relation.parentID == parentID && relation.completions > relation.handledCompletions {
+      delegatedChildren[id]?.handledCompletions = relation.completions
+      guard deliverable, let child = agents[id]?.snapshot, Self.isFinal(child.state) else {
+        continue
+      }
+      let excerpt =
+        relation.kind == "command"
+        ? TerminalOutputSearch.sanitizedExcerpt(child.output, limit: 600)
+        : String((child.result ?? "").suffix(600))
+      completions.append(
+        DelegatedCompletion(
+          childID: id, name: relation.name, kind: relation.kind, state: child.state,
+          exitCode: child.exitCode, excerpt: excerpt, completedAt: child.completedAt ?? .now))
+    }
+    return completions.sorted { $0.completedAt < $1.completedAt }
+  }
+
+  private static func isFinal(_ state: AgentLifecycleState) -> Bool {
+    state == .done || state == .failed || state == .stopped || state == .interrupted
+  }
+
+  private func countDelegatedCompletion(
+    _ childID: UUID, from previous: AgentLifecycleState, to next: AgentLifecycleState
+  ) {
+    guard !Self.isFinal(previous), Self.isFinal(next), delegatedChildren[childID] != nil else {
+      return
+    }
+    delegatedChildren[childID]?.completions += 1
   }
 
   private func refreshDelegatingParent(_ childID: UUID) {
@@ -336,11 +405,15 @@ public actor AgentSupervisor {
   }
 
   private func preparedBootstrap(
-    for request: AgentLaunchRequest, nodeID: UUID
+    for request: AgentLaunchRequest, nodeID: UUID, provider: AgentProvider
   ) async -> (request: AgentLaunchRequest, hash: String?) {
     var request = request
     if let prompt = request.prompt, !PromptSubmission.isHiddenControlPrompt(prompt),
-      let context = await turnContextProvider?(nodeID, prompt)
+      let context = await turnContextProvider?(nodeID, prompt),
+      // A shell agent's launch prompt is run as a command (`$SHELL -lc <prompt>`), so it must
+      // reach the shell exactly as written: the memory envelope would make it a syntax error.
+      // The context is still taken above, so one-turn hidden context does not linger.
+      provider != .shell
     {
       request.prompt = PromptSubmission.contextualPrompt(prompt, context: context)
     }
@@ -466,7 +539,8 @@ public actor AgentSupervisor {
     }
     recordLaunch(id, account: accountRequest.account, provider: adapter.provider)
     let prepared = await preparedBootstrap(
-      for: enriched(accountRequest, controlEnvironment: controlEnv), nodeID: id)
+      for: enriched(accountRequest, controlEnvironment: controlEnv), nodeID: id,
+      provider: adapter.provider)
     let specification = Self.applyingAccount(
       try await adapter.buildLaunchSpec(prepared.request), account: accountRequest.account)
     try await resourceScheduler.acquire(id)
@@ -506,7 +580,8 @@ public actor AgentSupervisor {
     }
     recordLaunch(id, account: accountRequest.account, provider: adapter.provider)
     let prepared = await preparedBootstrap(
-      for: enriched(accountRequest, controlEnvironment: controlEnv), nodeID: id)
+      for: enriched(accountRequest, controlEnvironment: controlEnv), nodeID: id,
+      provider: adapter.provider)
     let specification = Self.applyingAccount(
       try await adapter.buildLaunchSpec(prepared.request), account: accountRequest.account)
     let spawnedID = try spawn(
@@ -543,7 +618,8 @@ public actor AgentSupervisor {
     let accountChanged = launchAccounts[id].map { $0 != accountID } ?? false
     resumedRequest.resumeSessionID = accountChanged ? nil : sessionID
     recordLaunch(id, account: resumedRequest.account, provider: adapter.provider)
-    let prepared = await preparedBootstrap(for: resumedRequest, nodeID: id)
+    let prepared = await preparedBootstrap(
+      for: resumedRequest, nodeID: id, provider: adapter.provider)
     let specification = Self.applyingAccount(
       try await adapter.buildLaunchSpec(prepared.request), account: resumedRequest.account)
     let spawnedID = try spawn(
@@ -674,8 +750,12 @@ public actor AgentSupervisor {
     let context =
       PromptSubmission.isHiddenControlPrompt(prompt)
       ? nil : await turnContextProvider?(agentID, prompt)
+    // A shell agent's input is run as commands, so the envelope would be executed line by line.
+    // The context is still taken above, so one-turn hidden context does not linger.
+    let wrap = agents[agentID]?.snapshot.provider != .shell
     let providerPrompt =
-      context.map { PromptSubmission.contextualPrompt(prompt, context: $0) } ?? prompt
+      wrap
+      ? context.map { PromptSubmission.contextualPrompt(prompt, context: $0) } ?? prompt : prompt
     guard var agent = agents[agentID] else { throw RuntimeError.agentNotFound(agentID) }
     guard
       agent.snapshot.state == .idle || agent.snapshot.state == .done
@@ -1665,6 +1745,11 @@ public actor AgentSupervisor {
       inputTokens: result.inputTokens, outputTokens: result.outputTokens)
   }
 
+  /// A provider can report one tool call twice in quick succession; those copies are dropped.
+  /// An identical call made again after the tool ran is a real repeat and must stay visible,
+  /// both to the person and to the watchdog's loop check.
+  static let duplicateToolCallWindow: TimeInterval = 1
+
   private func appendTranscript(
     _ role: AgentTranscriptRole,
     kind: AgentTranscriptKind = .text,
@@ -1710,7 +1795,9 @@ public actor AgentSupervisor {
     if let last = agent.snapshot.transcript.last,
       last.role == role,
       last.kind == kind,
-      last.text == text
+      last.text == text,
+      kind != .toolCall
+        || Date().timeIntervalSince(last.createdAt) < Self.duplicateToolCallWindow
     {
       return
     }
@@ -1774,6 +1861,7 @@ public actor AgentSupervisor {
       state = parked.state
       confidence = 1
     }
+    countDelegatedCompletion(agent.snapshot.id, from: agent.snapshot.state, to: state)
     agent.snapshot.state = state
     agent.snapshot.confidence = confidence
     if state == .done || state == .failed || state == .interrupted || state == .stopped {

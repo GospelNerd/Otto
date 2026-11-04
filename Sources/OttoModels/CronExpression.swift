@@ -1,9 +1,9 @@
 import Foundation
 
 /// A five-field cron expression (minute, hour, day-of-month, month, day-of-week) supporting
-/// `*`, single values, ranges (`a-b`), steps (`*/n`, `a-b/n`), and comma lists. Days of week
-/// are numeric, 0–7 where both 0 and 7 mean Sunday. Standard cron semantics apply: when both
-/// day fields are restricted, a day matches if either field matches.
+/// `*`, single values, ranges (`a-b`), steps (`*/n`, `a-b/n`, `a/n`), and comma lists. Days
+/// of week are numeric, 0–7 where both 0 and 7 mean Sunday. Standard cron semantics apply: when
+/// both day fields are restricted, a day matches if either field matches.
 public struct CronExpression: Equatable, Sendable {
   public let expression: String
   private let minutes: Set<Int>
@@ -112,8 +112,13 @@ public struct CronExpression: Equatable, Sendable {
       span = low...high
     } else {
       guard let value = Int(base), range.contains(value) else { return nil }
-      guard step == 1 else { return nil }
-      return [value]
+      // `a/n` is standard cron shorthand for `a-<field maximum>/n`, stepping from the start
+      // value to the end of the field. A plain `a` keeps its single-value meaning.
+      if step > 1 {
+        span = value...range.upperBound
+      } else {
+        return [value]
+      }
     }
     return Set(stride(from: span.lowerBound, through: span.upperBound, by: step))
   }
