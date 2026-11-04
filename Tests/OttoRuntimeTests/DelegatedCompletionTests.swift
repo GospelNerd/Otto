@@ -28,7 +28,12 @@ struct DelegatedCompletionTests {
   func batchesForIdleParent() async throws {
     let supervisor = AgentSupervisor()
     defer { Task { await supervisor.stopAll() } }
-    let parent = try await command("sleep 1", on: supervisor)
+    // The parent stays busy until the test releases it, however slow the machine is.
+    let release = FileManager.default.temporaryDirectory
+      .appendingPathComponent("otto-release-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: release) }
+    let parent = try await command(
+      "while [ ! -e '\(release.path)' ]; do sleep 0.05; done", on: supervisor)
     let first = try await command("printf first-ok", on: supervisor)
     let second = try await command("printf second-bad; exit 3", on: supervisor)
     await supervisor.registerDelegatedChild(
@@ -42,6 +47,7 @@ struct DelegatedCompletionTests {
     // The parent is still busy: nothing is handed over yet.
     #expect(await supervisor.takeDelegatedCompletions(parentID: parent).isEmpty)
 
+    FileManager.default.createFile(atPath: release.path, contents: nil)
     try await waitFor(parent, on: supervisor) { $0 == .done }
     let completions = await supervisor.takeDelegatedCompletions(parentID: parent)
     #expect(Set(completions.map(\.childID)) == [first, second])
@@ -76,7 +82,7 @@ struct DelegatedCompletionTests {
     let supervisor = AgentSupervisor()
     defer { Task { await supervisor.stopAll() } }
     let parent = try await supervisor.spawnDeterministicMock()
-    let child = try await command("sleep 0.3; printf late", on: supervisor)
+    let child = try await command("sleep 2; printf late", on: supervisor)
     await supervisor.registerDelegatedChild(
       parentID: parent, childID: child, name: "Slow", kind: "command")
     await supervisor.markDelegatedCompletionConsumed(childID: child, by: parent)
