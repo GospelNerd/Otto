@@ -20,12 +20,31 @@ extension ApplicationServices {
   func holdRoutineResultForReview(
     _ routine: Routine, runID: UUID, nodeID: UUID, result: String, depth: Int
   ) throws {
+    guard routineEngine.holdsForApproval(routine) else {
+      try postRoutineResultAsUpdate(routine, nodeID: nodeID, result: result)
+      return
+    }
     try homeReviews.add(
       HomeReview(
         title: routine.name, requester: routine.name, draft: result,
         afterApproval: routine.afterApproval?.trimmingCharacters(in: .whitespacesAndNewlines)
           .nilIfEmpty,
         agentNodeID: nodeID, routineID: routine.id, runID: runID, chainDepth: depth))
+  }
+
+  /// "Check with me first" with nothing set to run after approval: there is nothing to decide,
+  /// so the answer goes to the brief as an update that opens the run's full report.
+  func postRoutineResultAsUpdate(_ routine: Routine, nodeID: UUID, result: String) throws {
+    // The automation already delivers to the brief or a card; don't post it twice.
+    guard case .canvas = routine.delivery else { return }
+    var items = BriefOutputParser.parse(
+      result, origin: .routine(routine.id), profileID: dailyBrief.selectedProfile.id,
+      sourceName: routine.name)
+    guard !items.isEmpty else { return }
+    for index in items.indices where items[index].action == nil {
+      items[index].action = .openAgent(nodeID)
+    }
+    try dailyBrief.replace(origin: .routine(routine.id), with: items)
   }
 
   /// Approves a review, optionally with the person's edits, and starts whatever waits on it.
@@ -62,6 +81,7 @@ extension ApplicationServices {
       $0.actionStatus = .running
       $0.actionPermission = nil
       $0.actionResult = nil
+      $0.actionDenied = nil
     }
     // The card stays on Home while the agent works, so its permission prompts and result show
     // there instead of only in Chat.
@@ -83,7 +103,8 @@ extension ApplicationServices {
           _ = try? self.homeReviews.update(id: id) { $0.actionPermission = pending?.reason }
         })
       _ = try? homeReviews.update(id: id) { review in
-        review.actionStatus = .done
+        // The agent's turn ends normally after a Deny too; it just couldn't do the action.
+        review.actionStatus = review.actionDenied == true ? .declined : .done
         review.actionPermission = nil
         review.actionResult =
           answer?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty.map {
@@ -107,7 +128,10 @@ extension ApplicationServices {
     } else {
       await resolveAgentPermission(agentID: nodeID, approved: allow)
     }
-    _ = try? homeReviews.update(id: id) { $0.actionPermission = nil }
+    _ = try? homeReviews.update(id: id) {
+      $0.actionPermission = nil
+      $0.actionDenied = allow ? nil : true
+    }
   }
 
   /// Clears a finished action's card from Home.

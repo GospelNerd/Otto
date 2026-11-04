@@ -149,7 +149,7 @@ public final class RoutineEngine {
 
     let prompt = try Self.composePrompt(
       routine: routine, payload: payload.text, now: .now, variables: flowVariables(for: routine),
-      approvedOnHome: payload.approvedOnHome)
+      approvedOnHome: payload.approvedOnHome, holdsForApproval: holdsForApproval(routine))
     // At-most-once: persist the fire and advance the next due time before dispatching the agent.
     var advanced = routine
     advanced.lastFiredAt = .now
@@ -220,7 +220,7 @@ public final class RoutineEngine {
 
   public nonisolated static func composePrompt(
     routine: Routine, payload: String?, now: Date, variables: [String: FlowVariable] = [:],
-    approvedOnHome: Bool = false
+    approvedOnHome: Bool = false, holdsForApproval: Bool? = nil
   ) throws -> String {
     let bounded = boundedPayload(payload)
     let (instruction, substituted) = fillVariables(in: routine.instruction, from: variables)
@@ -244,7 +244,7 @@ public final class RoutineEngine {
         "\nThe person reviewed the previous step's answer on Home and approved it (they may "
         + "have edited it). Use the approved text in the payload exactly as written."
     }
-    if routine.needsReview {
+    if holdsForApproval ?? routine.needsReview {
       prompt += "\n" + reviewInstruction
     }
     if case .homeCard = routine.delivery {
@@ -476,6 +476,15 @@ public final class RoutineEngine {
     {
       _ = try? await fire(routine, payload: queued)
     }
+  }
+
+  /// Whether an answer waits on Home for Approve: only when approving sets something off (an
+  /// "after approval" action or a next step). Otherwise there is nothing to decide and the
+  /// answer is posted as an update instead.
+  public func holdsForApproval(_ routine: Routine) -> Bool {
+    guard routine.needsReview else { return false }
+    let action = routine.afterApproval?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return !action.isEmpty || store.followers(of: routine.id).contains(where: \.enabled)
   }
 
   /// The person approved a held answer on Home: start the steps after it with the approved text.

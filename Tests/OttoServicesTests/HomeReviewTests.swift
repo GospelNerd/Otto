@@ -91,6 +91,23 @@ struct HomeReviewTests {
     #expect(post.contains("approved it (they may have edited it)"))
   }
 
+  @MainActor @Test func reviewWithNothingToApproveIsNotToldItIsWaiting() async throws {
+    let harness = Harness()
+    defer { harness.engine.stop() }
+    let report = try harness.step("Nightly report", review: true)
+    #expect(!harness.engine.holdsForApproval(report))
+    try await Task.sleep(for: .milliseconds(30))
+    _ = try await harness.engine.fire(report)
+    let prompt = try #require(harness.prompts.first?.prompt)
+    #expect(!prompt.contains(RoutineEngine.reviewInstruction))
+
+    var withAction = report
+    withAction.afterApproval = "Merge the branch"
+    #expect(harness.engine.holdsForApproval(withAction))
+    _ = try harness.step("Follow-up", after: report)
+    #expect(harness.engine.holdsForApproval(report))
+  }
+
   @MainActor @Test func silentAnswersAreNotSentForReview() async throws {
     let harness = Harness()
     defer { harness.engine.stop() }
@@ -259,6 +276,28 @@ struct HomeReviewTests {
     return (tip, try services.routines.save(post))
   }
 
+  @MainActor @Test func nothingToApprovePostsAnUpdateThatOpensTheReport() async throws {
+    let (services, root) = reviewServices()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let report = try services.routines.save(
+      Routine(
+        name: "Bug Fixer", instruction: "Triage overnight issues",
+        trigger: .schedule(cron: "0 5 * * *", intervalSeconds: nil),
+        target: .spawnProvider(provider: "Claude Code"), enabled: true, reviewOnHome: true))
+    let node = UUID()
+    try services.holdRoutineResultForReview(
+      report, runID: UUID(), nodeID: node,
+      result:
+        "**Nightly triage: one new bug has a fix.**\n\n| # | Verdict |\n|---|---|\n| #54 | Fixed |",
+      depth: 0)
+    #expect(services.homeReviews.open.isEmpty)
+    let update = try #require(
+      services.dailyBrief.items.first { $0.origin == .routine(report.id) })
+    #expect(update.kind == .update)
+    #expect(update.title.contains("Nightly triage: one new bug has a fix."))
+    #expect(update.action == .openAgent(node))
+  }
+
   @MainActor @Test func approvingSendsTheActionAndStartsTheNextStep() async throws {
     let (services, root) = reviewServices()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -347,6 +386,53 @@ struct HomeReviewTests {
     #expect(answers.first?.0 == agent)
     #expect(answers.first?.1 == true)
     #expect(services.homeReviews.review(id: id)?.actionPermission == nil)
+  }
+
+  @MainActor @Test func denyingWhatTheActionNeedsMarksItStoppedNotDone() async throws {
+    let (services, root) = reviewServices()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (tip, _) = try tipFlow(services)
+    services.reviewPermissionOverride = { _, _ in }
+    var release: CheckedContinuation<Void, Never>?
+    services.reviewAgentOverride = { _, _ in
+      await withCheckedContinuation { release = $0 }
+      return "I couldn't append the tip: access was denied."
+    }
+    try services.holdRoutineResultForReview(
+      tip, runID: UUID(), nodeID: UUID(), result: "Press ⌃⌥Space.", depth: 0)
+    let id = try #require(services.homeReviews.open.first).id
+    try await services.approveReview(id: id)
+    for _ in 0..<20 where release == nil { await Task.yield() }
+    try services.homeReviews.update(id: id) { $0.actionPermission = "Bash: echo tip >> tips.md" }
+    await services.answerReviewPermission(id: id, allow: false)
+    release?.resume()
+    await services.reviewActionTasks[id]?.value
+    let review = try #require(services.homeReviews.review(id: id))
+    #expect(review.actionStatus == .declined)
+    #expect(review.actionResult?.contains("denied") == true)
+    #expect(review.isActing)
+  }
+
+  @MainActor @Test func allowingAfterADenyStillCountsAsDone() async throws {
+    let (services, root) = reviewServices()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (tip, _) = try tipFlow(services)
+    services.reviewPermissionOverride = { _, _ in }
+    var release: CheckedContinuation<Void, Never>?
+    services.reviewAgentOverride = { _, _ in
+      await withCheckedContinuation { release = $0 }
+      return "Added it with the file editor instead."
+    }
+    try services.holdRoutineResultForReview(
+      tip, runID: UUID(), nodeID: UUID(), result: "Press ⌃⌥Space.", depth: 0)
+    let id = try #require(services.homeReviews.open.first).id
+    try await services.approveReview(id: id)
+    for _ in 0..<20 where release == nil { await Task.yield() }
+    await services.answerReviewPermission(id: id, allow: false)
+    await services.answerReviewPermission(id: id, allow: true)
+    release?.resume()
+    await services.reviewActionTasks[id]?.value
+    #expect(services.homeReviews.review(id: id)?.actionStatus == .done)
   }
 
   @MainActor @Test func aFailedActionSaysSoAndCanBeDismissed() async throws {

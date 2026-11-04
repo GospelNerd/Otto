@@ -944,7 +944,7 @@ struct AutomationEditor: View {
               .lineLimit(1...3)
               Text(
                 afterApproval.trimmingCharacters(in: .whitespaces).isEmpty
-                  ? "The draft waits on Home. Nothing after it runs until you approve."
+                  ? "With nothing here there’s nothing to approve, so it shows as an update instead."
                   : "The same agent does this with the approved text. Posting or sending needs “Allow it to make changes” on."
               )
               .font(.ottoDisplay(11)).foregroundStyle(palette.muted)

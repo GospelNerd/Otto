@@ -381,7 +381,7 @@ struct AutomationFlowBuilder: View {
           .lineLimit(1...3)
           Text(
             draft.children(of: step.wrappedValue.id).isEmpty
-              ? "The answer waits on Home until you approve, comment or reject."
+              ? "Add what to do when you approve, or it shows as an update instead."
               : "The agents after this wait until you approve it on Home."
           )
           .font(.ottoDisplay(11)).foregroundStyle(palette.muted)

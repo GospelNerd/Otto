@@ -183,6 +183,30 @@ struct HomeBriefSnapshotTests {
           .init(author: .agent, text: "Updated the draft."),
         ],
         agentNodeID: UUID(), createdAt: .now.addingTimeInterval(-3 * 3600)))
+    // A long Markdown report, like the nightly bug triage: it renders and scrolls in place.
+    var report = """
+      **Nightly triage, 4 Nov: one new bug (#54) has a fix (PR #56) that's tested and ready.** \
+      Before you merge, see the decision below.
+
+      **New since yesterday**
+
+      | # | Title | Verdict | Commit | Tests |
+      |---|---|---|---|---|
+      | #54 | "OAuth session expired" | Fixed by PR #56 | `7a26ac4` | 2 new, pass |
+      | #55 | Telegram drops photos | Needs info | — | — |
+
+      **Decisions for you**
+      1. Merge PR #56 now, or wait for the status fix.
+      2. Reply to #55 asking for the bot logs.
+
+      """
+    for index in 1...12 {
+      report += "- PR #\(56 + index): reviewed, tests pass on the nightly branch\n"
+    }
+    try services.homeReviews.add(
+      HomeReview(
+        title: "Nightly bug triage + fixes (Bug Fixer)", requester: "Bug Fixer", draft: report,
+        agentNodeID: UUID(), createdAt: .now.addingTimeInterval(-2 * 3600)))
     for themeID in ["shorelight", "halcyon"] {
       canvas.dispatch(.setTheme(themeID))
       let theme = OttoThemeCatalog.theme(id: themeID)

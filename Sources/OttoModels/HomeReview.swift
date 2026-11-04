@@ -16,6 +16,8 @@ public struct HomeReview: Codable, Identifiable, Sendable, Equatable {
     case running
     case done
     case failed
+    /// The person denied what the agent needed, so the action wasn't done.
+    case declined
     /// Otto quit before it finished, so nobody knows whether it happened.
     case interrupted
   }
@@ -65,6 +67,8 @@ public struct HomeReview: Codable, Identifiable, Sendable, Equatable {
   public var actionPermission: String?
   /// The agent's one-line report once the action finished.
   public var actionResult: String?
+  /// The person's last answer to the action's permission prompt was Deny.
+  public var actionDenied: Bool?
   /// The person cleared the finished card from Home.
   public var actionDismissed: Bool?
 

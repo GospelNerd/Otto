@@ -52,7 +52,6 @@ struct HomeReviewCard: View {
   @State private var comment = ""
   @State private var editing = false
   @State private var edited = ""
-  @State private var expanded = false
   @State private var working = false
   @FocusState private var commentFocused: Bool
 
@@ -62,15 +61,13 @@ struct HomeReviewCard: View {
     VStack(alignment: .leading, spacing: 14) {
       header
       draft
-      if let action = review.afterApproval {
-        Label {
-          Text("When you approve: \(action)")
-        } icon: {
-          Image(systemName: "arrow.turn.down.right")
-        }
-        .font(.ottoDisplay(11))
-        .foregroundStyle(palette.muted)
+      Label {
+        Text(approvalOutcome)
+      } icon: {
+        Image(systemName: "arrow.turn.down.right")
       }
+      .font(.ottoDisplay(11))
+      .foregroundStyle(palette.muted)
       if !review.notes.isEmpty { thread }
       if commenting { commentField }
       if let problem = review.problem {
@@ -121,27 +118,13 @@ struct HomeReviewCard: View {
       TextEditor(text: $edited)
         .font(.ottoDisplay(13))
         .scrollContentBackground(.hidden)
-        .frame(minHeight: 110, maxHeight: 260)
+        .frame(minHeight: 110, maxHeight: 320)
         .padding(8)
         .background(palette.paper.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.signal.opacity(0.5)))
     } else {
-      VStack(alignment: .leading, spacing: 6) {
-        Text(review.draft)
-          .font(.ottoDisplay(13))
-          .lineSpacing(2)
-          .lineLimit(expanded ? nil : 8)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
-          .padding(12)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .background(palette.paper.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-          .opacity(revising ? 0.55 : 1)
-        if review.draft.count > 480 || review.draft.filter(\.isNewline).count > 7 {
-          Button(expanded ? "Show less" : "Show all") { expanded.toggle() }
-            .buttonStyle(.plain).font(.ottoDisplay(10.5)).foregroundStyle(palette.muted)
-        }
-      }
+      HomeReviewDraftView(text: review.draft, maxHeight: 320)
+        .opacity(revising ? 0.55 : 1)
     }
   }
 
@@ -153,10 +136,14 @@ struct HomeReviewCard: View {
             .font(.system(size: 11))
             .foregroundStyle(note.author == .person ? palette.muted : palette.signal)
             .frame(width: 14)
-          Text(note.text).font(.ottoDisplay(11.5))
-            .foregroundStyle(note.author == .person ? palette.paper.opacity(0.85) : palette.paper)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
+          if note.author == .agent {
+            MarkdownMessageView(text: note.text, scale: 1, palette: palette)
+          } else {
+            Text(note.text).font(.ottoDisplay(11.5))
+              .foregroundStyle(palette.paper.opacity(0.85))
+              .fixedSize(horizontal: false, vertical: true)
+              .textSelection(.enabled)
+          }
         }
       }
     }
@@ -233,9 +220,25 @@ struct HomeReviewCard: View {
     .disabled(working || revising)
   }
 
+  /// The steps that start once this is approved, by name.
+  private var nextSteps: [String] {
+    review.routineID.map { id in services.routines.followers(of: id).map(\.name) } ?? []
+  }
+
+  /// What Approve will set off, so it's never a surprise that nothing happens.
+  private var approvalOutcome: String {
+    var parts: [String] = []
+    if let action = review.afterApproval { parts.append(action) }
+    if !nextSteps.isEmpty { parts.append("then " + nextSteps.joined(separator: ", ")) }
+    return parts.isEmpty
+      ? "Approving only marks this as reviewed. Nothing else is set to run."
+      : "When you approve: " + parts.joined(separator: ", ")
+  }
+
   private func approve() {
     let text = editing ? edited : nil
     let action = review.afterApproval
+    let follows = nextSteps
     let id = review.id
     working = true
     Task {
@@ -244,7 +247,11 @@ struct HomeReviewCard: View {
         report(
           OttoStatusToast(
             kind: .success, title: "Approved",
-            detail: action.map { _ in "It’s doing it now. Follow along on the card." }))
+            detail: action != nil
+              ? "It’s doing it now. Follow along on the card."
+              : follows.isEmpty
+                ? "Marked as reviewed. Nothing else was set to run."
+                : "Started \(follows.joined(separator: ", "))."))
       } catch {
         report(
           OttoStatusToast(
@@ -305,13 +312,14 @@ struct HomeReviewActionCard: View {
         Spacer()
         pill
       }
-      Text(review.draft)
-        .font(.ottoDisplay(12)).foregroundStyle(palette.paper.opacity(0.75))
-        .lineLimit(3)
-        .frame(maxWidth: .infinity, alignment: .leading)
+      HomeReviewDraftView(text: review.draft, maxHeight: 140)
+        .opacity(0.8)
       if let action = review.afterApproval {
         Label {
-          Text(status == .done ? "Did: \(action)" : "Doing: \(action)")
+          Text(
+            status == .done
+              ? "Did: \(action)" : status == .declined ? "Didn’t do: \(action)" : "Doing: \(action)"
+          )
         } icon: {
           Image(systemName: "arrow.turn.down.right")
         }
@@ -357,6 +365,7 @@ struct HomeReviewActionCard: View {
       }
       .font(.ottoDisplay(10.5)).foregroundStyle(palette.signal)
     case .done: tag("DONE", palette.muted)
+    case .declined: tag("STOPPED", palette.muted)
     case .failed, .interrupted: tag("DIDN’T FINISH", palette.red)
     }
   }
@@ -397,6 +406,13 @@ struct HomeReviewActionCard: View {
       Label(Self.plain(review.actionResult ?? "Done."), systemImage: "checkmark.circle")
         .font(.ottoDisplay(12)).foregroundStyle(palette.paper)
         .fixedSize(horizontal: false, vertical: true)
+    case .declined:
+      Label(
+        Self.plain(review.actionResult ?? "You denied what it needed, so it wasn’t done."),
+        systemImage: "xmark.circle"
+      )
+      .font(.ottoDisplay(12)).foregroundStyle(palette.paper.opacity(0.85))
+      .fixedSize(horizontal: false, vertical: true)
     case .failed:
       Text(review.problem ?? "The action didn’t finish.")
         .font(.ottoDisplay(11)).foregroundStyle(palette.red)
@@ -426,5 +442,41 @@ struct HomeReviewActionCard: View {
       await services.answerReviewPermission(id: id, allow: allow)
       answering = false
     }
+  }
+}
+
+/// A draft rendered as Markdown (headings, bold, lists, tables, code) in a plate that grows
+/// with short drafts and scrolls inside once it reaches `maxHeight`, so a long report never
+/// makes the card huge.
+struct HomeReviewDraftView: View {
+  let text: String
+  let maxHeight: CGFloat
+  @Environment(\.ottoPalette) private var palette
+
+  var body: some View {
+    ViewThatFits(in: .vertical) {
+      content
+      ScrollView(.vertical) { content }
+        .scrollIndicators(.visible)
+        // macOS hides scroll bars until you scroll, so a fade says there's more below.
+        .overlay(alignment: .bottom) {
+          LinearGradient(
+            colors: [palette.surface.opacity(0), palette.surface.opacity(0.55)],
+            startPoint: .top, endPoint: .bottom
+          )
+          .frame(height: 36)
+          .allowsHitTesting(false)
+        }
+    }
+    .frame(maxHeight: maxHeight)
+    .background(palette.paper.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+    .clipShape(RoundedRectangle(cornerRadius: 8))
+  }
+
+  private var content: some View {
+    MarkdownMessageView(text: text, scale: 1.1, palette: palette)
+      .textSelection(.enabled)
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
