@@ -810,7 +810,7 @@ public final class ApplicationServices: ObservableObject {
             return "\(node.displayName) — \(provider) — agentID \(node.id.uuidString)"
           }
       }
-      let skills = await MainActor.run { self?.skillPromptLines(forNode: nodeID) ?? [] }
+      let skills = await self?.skillPromptLines(forNode: nodeID) ?? []
       let bootstrap = await builder.build(
         personal: personal, operating: operating, permissionSummary: summary,
         peerAgents: peers, skills: skills)

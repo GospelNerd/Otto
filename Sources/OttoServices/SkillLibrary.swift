@@ -260,14 +260,14 @@ public final class SkillLibraryStore: ObservableObject {
     guard !isScanning else { return }
     isScanning = true
     let scanner = scanner
-    Task.detached(priority: .utility) {
-      let usage = scanner.claudeCodeUsage()
-      let entries = scanner.scan(usage: usage)
-      await MainActor.run {
-        self.entries = entries
-        self.isScanning = false
-        self.lastScan = Date()
-      }
+    // The scan reads files off the main actor; only its Sendable result comes back.
+    Task {
+      let entries = await Task.detached(priority: .utility) {
+        scanner.scan(usage: scanner.claudeCodeUsage())
+      }.value
+      self.entries = entries
+      isScanning = false
+      lastScan = Date()
     }
   }
 

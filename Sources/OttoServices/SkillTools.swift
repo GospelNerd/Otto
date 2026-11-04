@@ -83,25 +83,29 @@ extension ApplicationServices {
     }
   }
 
+  func skillListOutput(forNode nodeID: UUID?) -> SkillListOutput {
+    SkillListOutput(
+      skills: availableOttoSkills(forNode: nodeID).map {
+        SkillSummary(name: $0.name, description: $0.description)
+      })
+  }
+
+  func availableOttoSkill(named name: String, forNode nodeID: UUID?) -> SkillEntry? {
+    availableOttoSkills(forNode: nodeID).first {
+      $0.name.caseInsensitiveCompare(name) == .orderedSame
+    }
+  }
+
   func registerSkillTools() async throws {
     try await registry.register(
       SkillListTool { [weak self] context in
         guard let self else { throw ToolRegistryError.invalidInput("Otto unavailable") }
-        return await MainActor.run {
-          SkillListOutput(
-            skills: self.availableOttoSkills(forNode: context.sourceNodeID).map {
-              SkillSummary(name: $0.name, description: $0.description)
-            })
-        }
+        return await self.skillListOutput(forNode: context.sourceNodeID)
       })
     try await registry.register(
       SkillReadTool { [weak self] name, context in
         guard let self else { throw ToolRegistryError.invalidInput("Otto unavailable") }
-        let entry = await MainActor.run {
-          self.availableOttoSkills(forNode: context.sourceNodeID).first {
-            $0.name.caseInsensitiveCompare(name) == .orderedSame
-          }
-        }
+        let entry = await self.availableOttoSkill(named: name, forNode: context.sourceNodeID)
         guard let entry else {
           throw ToolRegistryError.invalidInput(
             "No Otto skill named \(name) is available here. Call skill.list to see them.")
