@@ -4,7 +4,7 @@ All notable changes to Otto (called Muse before 0.2.0) are documented here. Each
 published verbatim as the in-app update notes and on the download site, so write for users:
 lead with what they can now do, not how it was implemented.
 
-## Unreleased
+## 0.2.16 — 2026-11-04
 
 ### New
 
