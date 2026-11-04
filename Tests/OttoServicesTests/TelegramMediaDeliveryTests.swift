@@ -103,6 +103,57 @@ struct TelegramMediaDeliveryTests {
     await services.shutdown()
   }
 
+  @Test("Stopping inside the coalescing window abandons the album instead of keeping it")
+  func stopClearsPendingAlbums() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: "tg-album-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let services = ApplicationServices(store: CanvasStore(), workspacePath: root.path)
+    await services.start()
+    let bot = try services.createBot(BotCreationRequest(name: "Scout", responsibility: "Help"))
+    try services.connectorAccess.setAllowed(true, profileID: bot.id, for: .telegram)
+
+    let suite = "TelegramAlbumCleanup-\(UUID())"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let hash = SHA256.hash(data: Data(root.path.utf8)).map { String(format: "%02x", $0) }
+      .joined().prefix(24)
+    defaults.set(NSNumber(value: 123), forKey: "otto.telegram.\(hash).chat")
+
+    // An empty poll that answers at once, so the album batch is consumed by the next poll.
+    let api = FakeBotAPI(token: "123456:abcdefghijklmnopqrstuvwxyz", updates: "")
+    let album = """
+      {"ok":true,"result":[
+        {"update_id":1,"message":{"message_id":11,"chat":{"id":123,"type":"private"},
+          "from":{"id":123,"is_bot":false},"media_group_id":"g1",
+          "photo":[{"file_id":"photo","file_unique_id":"p","width":800,"height":600,"file_size":4}]}}
+      ]}
+      """
+    FakeBotAPI.current = api
+    URLProtocol.registerClass(FakeBotAPIProtocol.self)
+    defer {
+      URLProtocol.unregisterClass(FakeBotAPIProtocol.self)
+      FakeBotAPI.current = nil
+    }
+
+    let connector = TelegramConnector(
+      services: services, secrets: InMemorySecretStore(), defaults: defaults)
+    await connector.connect(token: api.token)
+    api.serve(album)
+    // The poll consumes the batch inline and parks the album for 1.5 s of coalescing.
+    try await waitUntil(
+      timeout: .seconds(60), describe: "pending: \(connector.pendingAlbums.keys.sorted())"
+    ) {
+      !connector.pendingAlbums.isEmpty
+    }
+    // Stopping mid-window cancels the delivery task; the cancelled task's removal runs only on
+    // its success path, so without cleanup the entry (handles + caption) stays for the session.
+    connector.stop()
+    #expect(connector.pendingAlbums.isEmpty)
+    await services.shutdown()
+  }
+
   func waitUntil(
     timeout: Duration = .seconds(15), describe: @autoclosure () -> String = "",
     _ condition: @MainActor () async throws -> Bool

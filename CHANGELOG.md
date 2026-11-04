@@ -12,6 +12,8 @@ lead with what they can now do, not how it was implemented.
 
 ### Fixed
 
+- **Spreadsheet FIND and SEARCH no longer crash on a start just past the text.** `FIND("ld", A1, 12)` on an 11-character cell now answers #VALUE!, as Excel does, instead of stopping the app. Thanks to Sukhpal Gill (onlinegill) for PR #60.
+- **Telegram albums interrupted mid-send are let go.** Stopping or reconnecting Telegram while an album was still arriving left its photos held in memory for the rest of the session. Thanks to Sukhpal Gill (onlinegill) for PR #61.
 - **Home updates show what you asked a bot to do.** A finished bot's update could start with Otto's internal "[OTTO CONTEXT PROMPT …]" text instead of your request.
 
 ## 0.2.15 — 2026-11-04

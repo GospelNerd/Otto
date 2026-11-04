@@ -492,7 +492,7 @@ public final class TelegramConnector: ObservableObject {
   /// voice note. Cancelled on stop, disconnect and before a new token connects.
   private var messageTasks: [UUID: Task<Void, Never>] = [:]
   /// Photos and videos of one album, collected until Telegram stops delivering them.
-  private var pendingAlbums: [String: PendingAlbum] = [:]
+  var pendingAlbums: [String: PendingAlbum] = [:]
   /// Messages waiting for each bot, oldest first. A bot takes one prompt per run, so what arrives
   /// while it is working waits here instead of being bounced (issue #41).
   private var queuedPrompts: [UUID: [QueuedPrompt]] = [:]
@@ -507,7 +507,7 @@ public final class TelegramConnector: ObservableObject {
   /// How long a run is then followed in the background for its late answer.
   var lateFollowWindow: TimeInterval = 4 * 3_600
 
-  private struct PendingAlbum {
+  struct PendingAlbum {
     var media: [TelegramMedia]
     var caption: String
     var generation: Int
@@ -804,6 +804,10 @@ public final class TelegramConnector: ObservableObject {
     queuedPrompts = [:]
     queuePumps = [:]
     lateFollows = [:]
+    // An album mid-coalescing belonged to that connection too: its tracked task returns at its
+    // cancellation guard without clearing its entry, and Telegram reuses media_group_id only
+    // within a burst, so the map would otherwise hold every stopped-at album's handles forever.
+    pendingAlbums = [:]
   }
 
   /// What is waiting for a bot, oldest first.

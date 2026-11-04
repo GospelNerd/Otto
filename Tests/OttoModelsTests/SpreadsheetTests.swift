@@ -481,6 +481,16 @@ struct SpreadsheetTests {
     #expect(value("SEARCH(\"w\", B1)") == .number(7))
     #expect(value("SEARCH(\"w?r\", B1)") == .number(7))
     #expect(value("SEARCH(\"z\", B1)") == .error("#VALUE!"))
+    // A start one past the end of the text is out of range, not a scan with an inverted
+    // window: the scan loop built (start - 1)...(count - needle) below the last position and
+    // trapped the process where Excel answers #VALUE!.
+    #expect(value("FIND(\"o\", B1, 12)") == .error("#VALUE!"))
+    #expect(value("SEARCH(\"o\", B1, 12)") == .error("#VALUE!"))
+    #expect(value("FIND(\"World\", B1, 8)") == .error("#VALUE!"))
+    #expect(value("SEARCH(\"l*d\", B1, 12)") == .error("#VALUE!"))
+    // Searching the last character is still in range, and an empty needle keeps its position.
+    #expect(value("FIND(\"d\", B1, 11)") == .number(11))
+    #expect(value("FIND(\"\", B1, 12)") == .number(12))
     #expect(value("PROPER(\"hello wORLD 2nd-place\")") == .text("Hello World 2Nd-Place"))
     #expect(value("REPT(\"ab\", 3)") == .text("ababab"))
     #expect(value("REPT(\"ab\", -1)") == .error("#VALUE!"))

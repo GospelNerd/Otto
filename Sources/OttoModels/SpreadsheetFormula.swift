@@ -1223,8 +1223,14 @@ extension SpreadsheetEvaluator {
         throw CellError(code: "#VALUE!")
       }
       let pattern = Array(name == "FIND" ? needle : needle.lowercased())
-      if characters.count >= pattern.count {
-        for index in (start - 1)...(characters.count - pattern.count)
+      // A start is in range while a match can still begin at it: at most `count - needle`, and
+      // an empty needle matches at its start position. The guard above admits `count + 1`, so
+      // starting just past the end with a multi-character needle — FIND("World", "Hello World",
+      // 8) — left the scan range inverted and trapped the process instead of answering
+      // #VALUE!, as Excel does.
+      let lastStart = pattern.count == 0 ? characters.count : characters.count - pattern.count
+      if start - 1 <= lastStart {
+        for index in (start - 1)...lastStart
         where characters[index..<index + pattern.count].elementsEqual(pattern) {
           return .number(Double(index + 1))
         }
