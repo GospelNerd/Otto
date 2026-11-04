@@ -6,6 +6,10 @@ lead with what they can now do, not how it was implemented.
 
 ## Unreleased
 
+### New
+
+- **Skills: one library every bot, team and session can use.** Chat → Skills shows every skill on your Mac in one list: Otto's own, plus the ones Claude Code, Claude plugins, Codex, Hermes and OpenCode already have, with where each lives and how often it was used. Turn on **All agents** for any of them, or write a new one, and every bot, team and session can use it whichever harness it runs on; narrow it to particular bots if you like. Agents see a one-line list of their skills and load a skill's full instructions only when a task needs it, so a big library costs few tokens (issue #43).
+
 ### Fixed
 
 - **Home updates show what you asked a bot to do.** A finished bot's update could start with Otto's internal "[OTTO CONTEXT PROMPT …]" text instead of your request.

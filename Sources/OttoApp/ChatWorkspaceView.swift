@@ -716,6 +716,7 @@ struct ChatWorkspaceView: View {
           .documents, symbol: "doc.richtext", count: services.office.files.count)
         destinationRow(
           .files, symbol: "doc.text", count: libraryItems(kinds: [.markdown, .media]).count)
+        destinationRow(.skills, symbol: "sparkles", count: services.skills.entries.count)
       }
     }
   }
@@ -1145,6 +1146,8 @@ struct ChatWorkspaceView: View {
         nodeID in
         assistantConversation(nodeID)
       }
+    case .skills:
+      SkillsView(services: services, library: services.skills)
     case .browser:
       ChatBrowserPlace(
         services: services,

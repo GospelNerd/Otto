@@ -136,11 +136,16 @@ public struct ClaudeCodeAdapter: AgentAdapter {
       // (terminal.run, agent.spawn, ...) stays behind Claude's prompt. Read-only bots keep
       // Claude's plan-mode prompts. The variadic flag sits before another flag so it cannot
       // swallow the trailing positional prompt.
-      if request.permissionMode == .workspaceWrite, !request.ottoSelfConfirmingTools.isEmpty {
+      // Reading a skill's instructions changes nothing, so it never needs Claude's prompt; what
+      // the skill then asks for still goes through the normal approvals.
+      var preapproved = Self.ottoAlwaysAllowedTools
+      if request.permissionMode == .workspaceWrite {
+        preapproved += request.ottoSelfConfirmingTools
+      }
+      if request.permissionMode != .unrestricted {
         arguments += [
           "--allowedTools",
-          request.ottoSelfConfirmingTools.map(OttoMCPRegistration.claudeToolName).joined(
-            separator: ","),
+          preapproved.map(OttoMCPRegistration.claudeToolName).joined(separator: ","),
         ]
       }
       arguments += ["--mcp-config", mcpConfig]
@@ -192,6 +197,9 @@ public struct ClaudeCodeAdapter: AgentAdapter {
       """
     }
   }
+
+  /// Otto tools that only read the person's own skill library.
+  static let ottoAlwaysAllowedTools = ["skill.list", "skill.read"]
 
   static let ottoWorkspaceGuidance = """
     You are working in Otto. Users access conversations in Chat and files in Documents. Otto tools are available through \

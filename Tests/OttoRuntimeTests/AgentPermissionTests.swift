@@ -192,7 +192,7 @@ struct AgentPermissionTests {
     #expect(spec.arguments.last == "List the repository files.")
   }
 
-  @Test("Claude pre-approves only the Otto tools Otto confirms itself, never the whole server")
+  @Test("Claude pre-approves only skill reads and the Otto tools Otto confirms itself, never the whole server")
   func claudeAllowsOnlySelfConfirmingOttoTools() async throws {
     let adapter = ClaudeCodeAdapter(executablePath: "/bin/echo")
     let spec = try await adapter.buildLaunchSpec(
@@ -204,7 +204,9 @@ struct AgentPermissionTests {
         ottoSelfConfirmingTools: ["smtp.send", "calendar.create_event"]
       ))
     let index = try #require(spec.arguments.firstIndex(of: "--allowedTools"))
-    #expect(spec.arguments[index + 1] == "mcp__otto__smtp_send,mcp__otto__calendar_create_event")
+    #expect(
+      spec.arguments[index + 1]
+        == "mcp__otto__skill_list,mcp__otto__skill_read,mcp__otto__smtp_send,mcp__otto__calendar_create_event")
     // A server-wide grant would let terminal.run, agent.spawn, ... skip every prompt.
     #expect(!spec.arguments.contains("mcp__otto"))
     #expect(!spec.arguments[index + 1].contains("terminal_run"))
@@ -219,7 +221,9 @@ struct AgentPermissionTests {
         ottoMCPExecutable: "/usr/local/bin/otto-mcp",
         ottoSelfConfirmingTools: ["smtp.send"]
       ))
-    #expect(!readOnly.arguments.contains("--allowedTools"))
+    // Read-only sessions may still read skills without a prompt, but nothing that acts.
+    let readOnlyIndex = try #require(readOnly.arguments.firstIndex(of: "--allowedTools"))
+    #expect(readOnly.arguments[readOnlyIndex + 1] == "mcp__otto__skill_list,mcp__otto__skill_read")
 
     let noList = try await adapter.buildLaunchSpec(
       AgentLaunchRequest(
@@ -228,7 +232,17 @@ struct AgentPermissionTests {
         permissionMode: .workspaceWrite,
         ottoMCPExecutable: "/usr/local/bin/otto-mcp"
       ))
-    #expect(!noList.arguments.contains("--allowedTools"))
+    let noListIndex = try #require(noList.arguments.firstIndex(of: "--allowedTools"))
+    #expect(noList.arguments[noListIndex + 1] == "mcp__otto__skill_list,mcp__otto__skill_read")
+
+    let bypass = try await adapter.buildLaunchSpec(
+      AgentLaunchRequest(
+        workspacePath: FileManager.default.currentDirectoryPath,
+        prompt: "Run the tests.",
+        permissionMode: .unrestricted,
+        ottoMCPExecutable: "/usr/local/bin/otto-mcp"
+      ))
+    #expect(!bypass.arguments.contains("--allowedTools"))
   }
 
   @Test("Claude in a project folder can read chat images staged in Otto's workspace")

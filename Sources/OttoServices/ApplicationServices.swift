@@ -217,6 +217,8 @@ public final class ApplicationServices: ObservableObject {
   /// Home profiles and the items users, routines and bots add to the daily brief.
   public let dailyBrief: DailyBriefStore
   public let homeCards: HomeCardsStore
+  /// Otto's shared skills plus the skills each harness already has on this Mac.
+  public let skills = SkillLibraryStore()
   /// Drafts waiting on Home for the person to approve, comment on or reject.
   public let homeReviews: HomeReviewStore
   public let office: OfficeStore
@@ -603,6 +605,7 @@ public final class ApplicationServices: ObservableObject {
           return try await self.providerAccountAction(input, context: context)
         })
       try await registerBotTools()
+      try await registerSkillTools()
       try await registerWebsiteAccountTools()
       try await registerAppConnectionTools()
       try await registerCalendarTools()
@@ -807,9 +810,10 @@ public final class ApplicationServices: ObservableObject {
             return "\(node.displayName) — \(provider) — agentID \(node.id.uuidString)"
           }
       }
+      let skills = await MainActor.run { self?.skillPromptLines(forNode: nodeID) ?? [] }
       let bootstrap = await builder.build(
         personal: personal, operating: operating, permissionSummary: summary,
-        peerAgents: peers)
+        peerAgents: peers, skills: skills)
       let profile = await MainActor.run { () -> (UUID, Int, String)? in
         guard
           let definition = store.snapshot.canvases.lazy

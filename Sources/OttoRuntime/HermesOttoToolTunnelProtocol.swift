@@ -15,6 +15,7 @@ public enum HermesOttoToolTunnelProtocol {
     "browser.forward", "browser.inspect", "browser.click", "browser.type",
     "browser.scroll", "browser.screenshot",
     "terminal.run", "terminal.wait", "terminal.read_output", "terminal.stop_process",
+    "skill.list", "skill.read",
   ]
 
   public struct Request: Sendable, Equatable {

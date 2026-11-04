@@ -84,6 +84,11 @@ public struct MCPBridge: Sendable {
         if Self.alwaysLoadedTools.contains(definition.name) {
           tool["_meta"] = .object(["anthropic/alwaysLoad": .bool(true)])
         }
+        // Read-only sessions (Claude's plan mode) prompt for any tool not marked read-only.
+        // Reading the person's skills changes nothing, so say so.
+        if Self.readOnlyTools.contains(definition.name) {
+          tool["annotations"] = .object(["readOnlyHint": .bool(true)])
+        }
         return JSONValue.object(tool)
       }
       return MCPResponse(
@@ -156,6 +161,9 @@ public struct MCPBridge: Sendable {
   /// Claude Code defers MCP tool schemas behind its ToolSearch step. That keeps the ~140 Otto
   /// tools out of every prompt, but costs a visible extra round trip before routine browser
   /// work. These core tools load up front (a few thousand cached tokens); the rest stay deferred.
+  /// Tools that only read the person's own skill library.
+  static let readOnlyTools: Set<String> = ["skill.list", "skill.read"]
+
   static let alwaysLoadedTools: Set<String> = [
     "node.list", "agent.ask_user", "docs.create",
     "browser.open", "browser.open_tab", "browser.navigate", "browser.get_state",

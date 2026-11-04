@@ -203,4 +203,19 @@ struct CompactMemoryAndBootstrapTests {
     #expect(nudged.contentHash == packet(nudge: "42 log entries have accumulated").contentHash)
     #expect(nudged.contentHash != packet(nudge: nil).contentHash)
   }
+
+  @Test("Skills appear in the launch prompt only when the agent has some")
+  func skillsSection() {
+    func packet(_ skills: [String]?) -> AgentMemoryBootstrap {
+      AgentMemoryBootstrap(
+        charter: AgentCharter(layers: [AgentCharter.ottoSafetyLayer]),
+        personalEntries: [], operatingEntries: [], project: "fixture", brainPath: "/tmp/brain",
+        permissionSummary: "bypass permissions", skills: skills)
+    }
+    let with = packet(["weekly-report — When asked for the weekly LinkedIn report"])
+    #expect(with.promptText.contains("## Skills"))
+    #expect(with.promptText.contains("skill.read"))
+    #expect(with.promptText.contains("- weekly-report — When asked"))
+    #expect(!packet(nil).promptText.contains("## Skills"))
+  }
 }

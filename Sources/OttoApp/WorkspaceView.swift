@@ -372,6 +372,10 @@ struct WorkspaceView: View {
         symbol: "chart.bar.xaxis", keywords: "dashboards cards charts metrics",
         perform: { openChatDestination(.dashboards) }),
       PaletteQuickAction(
+        id: "go.skills", title: "Skills", subtitle: "Skills every bot and session can use",
+        symbol: "sparkles", keywords: "skills library instructions claude codex hermes",
+        perform: { openChatDestination(.skills) }),
+      PaletteQuickAction(
         id: "go.browser", title: "Browser", subtitle: "Your browser tabs",
         symbol: "globe", keywords: "browser tabs web website internet",
         perform: { openChatDestination(.browser) }),

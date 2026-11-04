@@ -159,6 +159,8 @@ public struct AgentMemoryBootstrap: Codable, Equatable, Sendable {
   public var curationNudge: String?
   /// Which profile the agent works in, and whether it may look into the others.
   public var profileContext: String?
+  /// Otto skills this agent may load, one "name — when to use it" line each.
+  public var skills: [String]?
   public var generatedAt: Date
 
   public init(
@@ -171,6 +173,7 @@ public struct AgentMemoryBootstrap: Codable, Equatable, Sendable {
     peerAgents: [String] = [],
     curationNudge: String? = nil,
     profileContext: String? = nil,
+    skills: [String]? = nil,
     generatedAt: Date = .now
   ) {
     self.charter = charter
@@ -182,6 +185,7 @@ public struct AgentMemoryBootstrap: Codable, Equatable, Sendable {
     self.peerAgents = peerAgents
     self.curationNudge = curationNudge
     self.profileContext = profileContext
+    self.skills = skills
     self.generatedAt = generatedAt
   }
 
@@ -247,6 +251,20 @@ public struct AgentMemoryBootstrap: Codable, Equatable, Sendable {
         """
       )
     }
+    if let skills, !skills.isEmpty {
+      sections.append(
+        """
+        ## Skills
+
+        Otto skills you can use. Each line is a skill's name and when to use it. When a task \
+        matches one, call Otto's skill.read tool with its name (it may be listed as \
+        otto_skill_read or mcp__otto__skill_read) and follow the instructions it returns. These \
+        skills live in Otto, so a built-in skill or plugin tool of your own will not find them. \
+        Load a skill only when the task needs it.
+
+        \(skills.map { "- \($0)" }.joined(separator: "\n"))
+        """)
+    }
     sections.append("## Memory rules\n\n" + Self.memoryToolGuidance)
     if let curationNudge {
       sections.append("## Memory curation\n\n" + curationNudge)
@@ -299,7 +317,8 @@ public struct AgentMemoryBootstrapBuilder: Sendable {
     personal: CompactMemoryStore,
     operating: CompactMemoryStore,
     permissionSummary: String,
-    peerAgents: [String] = []
+    peerAgents: [String] = [],
+    skills: [String] = []
   ) async -> AgentMemoryBootstrap {
     var layers = [AgentCharter.ottoSafetyLayer]
     if let projectCharterPath,
@@ -320,7 +339,8 @@ public struct AgentMemoryBootstrapBuilder: Sendable {
       permissionSummary: permissionSummary,
       peerAgents: peerAgents,
       curationNudge: BrainCurationPressure.measure(brainPath: brainPath).nudgeText,
-      profileContext: profileContext
+      profileContext: profileContext,
+      skills: skills.isEmpty ? nil : skills
     )
   }
 }
