@@ -131,11 +131,14 @@ struct TerminalInputWaitTests {
     let supervisor = AgentSupervisor()
     await supervisor.setTerminalInputQuietInterval(.milliseconds(150))
     let command = try await supervisor.spawnTerminal(
-      shell: "/bin/sh", command: "echo building; sleep 2",
+      shell: "/bin/sh", command: "echo building; sleep 10",
       workingDirectory: FileManager.default.currentDirectoryPath)
     let shell = try await supervisor.spawnTerminal(
       shell: "/bin/sh", workingDirectory: FileManager.default.currentDirectoryPath)
     defer { Task { await supervisor.stopAll() } }
+    // Start the clock once both are running, so a slow machine's startup is not the test.
+    _ = try await waitFor(supervisor, command) { $0.state == .working }
+    _ = try await waitFor(supervisor, shell) { $0.state == .working }
     try await Task.sleep(for: .milliseconds(700))
     #expect(try await supervisor.snapshot(agentID: command).state == .working)
     #expect(try await supervisor.snapshot(agentID: shell).state == .working)

@@ -117,7 +117,8 @@ struct LiveModelCatalogTests {
     #expect(
       await LiveModelCatalog.discover(
         provider: .codex, executable: file.path, environment: [:], timeout: 0.2) == nil)
-    #expect(ContinuousClock.now - start < .seconds(3))
+    // Well under the stub's 30 s sleep; generous for a loaded CI runner.
+    #expect(ContinuousClock.now - start < .seconds(5))
   }
 
   @Test func partialOutputAndEarlyExitDoNotHang() async throws {
