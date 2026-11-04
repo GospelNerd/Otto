@@ -4,6 +4,12 @@ All notable changes to Otto (called Muse before 0.2.0) are documented here. Each
 published verbatim as the in-app update notes and on the download site, so write for users:
 lead with what they can now do, not how it was implemented.
 
+## Unreleased
+
+### Fixed
+
+- **Home updates show what you asked a bot to do.** A finished bot's update could start with Otto's internal "[OTTO CONTEXT PROMPT …]" text instead of your request.
+
 ## 0.2.15 — 2026-11-04
 
 ### New

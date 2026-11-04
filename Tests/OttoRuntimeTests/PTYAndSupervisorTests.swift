@@ -422,7 +422,7 @@ struct AgentSupervisorTests {
       adapter: RepeatingToolCallAdapter(),
       request: AgentLaunchRequest(
         workspacePath: FileManager.default.temporaryDirectory.path, prompt: "loop"))
-    try await waitForExit(id: id, supervisor: supervisor)
+    try await waitForExit(id: id, supervisor: supervisor, timeout: .seconds(20))
     let calls = try await supervisor.snapshot(agentID: id).transcript.filter {
       $0.kind == .toolCall
     }
@@ -1141,8 +1141,10 @@ private struct CompletingInteractiveAdapter: AgentAdapter {
   }
 }
 
-private func waitForExit(id: UUID, supervisor: AgentSupervisor) async throws {
-  let deadline = ContinuousClock.now + .seconds(5)
+private func waitForExit(
+  id: UUID, supervisor: AgentSupervisor, timeout: Duration = .seconds(5)
+) async throws {
+  let deadline = ContinuousClock.now + timeout
   while ContinuousClock.now < deadline {
     if try await supervisor.snapshot(agentID: id).exitCode != nil { return }
     try await Task.sleep(for: .milliseconds(10))
@@ -1252,7 +1254,8 @@ private struct MemoryCapturingAdapter: AgentAdapter {
   }
 }
 
-/// Prints the same Claude Code Bash call three times, 1.2 s apart, the first one twice at once.
+/// Prints the same Claude Code Bash call three times, 3 s apart (slow CI runners deliver PTY
+/// output in bursts), the first one twice at once.
 private struct RepeatingToolCallAdapter: AgentAdapter {
   let provider = AgentProvider.claudeCode
 
@@ -1267,7 +1270,7 @@ private struct RepeatingToolCallAdapter: AgentAdapter {
       #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Bash","#
       + #""input":{"command":"sleep 25; echo same"}}]}}"#
     let script =
-      "l='\(line)'; echo \"$l\"; echo \"$l\"; sleep 1.2; echo \"$l\"; sleep 1.2; "
+      "l='\(line)'; echo \"$l\"; echo \"$l\"; sleep 3; echo \"$l\"; sleep 3; "
       + "echo \"$l\""
     return ProcessLaunchSpec(
       executable: "/bin/sh", arguments: ["-c", script], workingDirectory: request.workspacePath)

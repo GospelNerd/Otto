@@ -95,7 +95,9 @@ extension ApplicationServices {
         guard let name = botName(profileID) else { continue }
         if let nodeID, nodes.first(where: { $0.id == nodeID })?.kind != .agent { continue }
         let snapshot = nodeID.flatMap { fleet[$0] }
-        let task = Self.briefSnippet(snapshot?.lastPrompt, limit: 70)
+        // A launch prompt can still carry Otto's context envelope; the title is the person's ask.
+        let task = Self.briefSnippet(
+          snapshot?.lastPrompt.map(PromptSubmission.originalUserText), limit: 70)
         items.append(
           BriefItem(
             id: "activity:\(activity.id)", kind: .update,
