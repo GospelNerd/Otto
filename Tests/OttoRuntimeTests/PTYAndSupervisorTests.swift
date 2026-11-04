@@ -423,10 +423,17 @@ struct AgentSupervisorTests {
       request: AgentLaunchRequest(
         workspacePath: FileManager.default.temporaryDirectory.path, prompt: "loop"))
     try await waitForExit(id: id, supervisor: supervisor, timeout: .seconds(20))
-    let calls = try await supervisor.snapshot(agentID: id).transcript.filter {
-      $0.kind == .toolCall
-    }
-    #expect(calls.count == 3)
+    // A loaded machine can finish parsing the last lines after the exit is recorded.
+    var calls: [AgentTranscriptEntry] = []
+    let deadline = ContinuousClock.now + .seconds(10)
+    repeat {
+      calls = try await supervisor.snapshot(agentID: id).transcript.filter {
+        $0.kind == .toolCall
+      }
+      if calls.count >= 3 { break }
+      try await Task.sleep(for: .milliseconds(50))
+    } while ContinuousClock.now < deadline
+    #expect(calls.count == 3, "tool calls at \(calls.map(\.createdAt.timeIntervalSince1970))")
     #expect(calls.allSatisfy { $0.text == "sleep 25; echo same" })
   }
 
@@ -1271,7 +1278,7 @@ private struct RepeatingToolCallAdapter: AgentAdapter {
       + #""input":{"command":"sleep 25; echo same"}}]}}"#
     let script =
       "l='\(line)'; echo \"$l\"; echo \"$l\"; sleep 3; echo \"$l\"; sleep 3; "
-      + "echo \"$l\""
+      + "echo \"$l\"; sleep 1"
     return ProcessLaunchSpec(
       executable: "/bin/sh", arguments: ["-c", script], workingDirectory: request.workspacePath)
   }
