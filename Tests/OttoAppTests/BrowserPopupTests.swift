@@ -8,6 +8,43 @@ import WebKit
 
 @Suite("Browser popup handoff", .serialized) @MainActor
 struct BrowserPopupTests {
+  @Test func httpRedirectHandsOffAppCallbackWithoutPageError() async throws {
+    _ = NSApplication.shared
+    let server = try PopupFixtureServer()
+    defer { server.stop() }
+    let destination = URL(string: "otto-test-callback://oauth/complete")!
+    var opened: [URL] = []
+    var pageErrors: [String] = []
+    var loading: Bool?
+    let coordinator = BrowserWebView.Coordinator(
+      nodeID: UUID(), tabID: UUID(), runtime: BrowserRuntime(),
+      requestedURL: server.url.absoluteString, requestedRevision: 0,
+      report: {
+        loading = $0.isLoading
+        if let error = $0.errorMessage { pageErrors.append(error) }
+      })
+    coordinator.isActive = true
+    coordinator.externalNavigation = BrowserExternalNavigation(
+      application: { _ in URL(fileURLWithPath: "/Applications/Fixture.app") },
+      open: {
+        opened.append($0)
+        return true
+      })
+    let config = WKWebViewConfiguration()
+    config.websiteDataStore = .nonPersistent()
+    let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 500), configuration: config)
+    view.navigationDelegate = coordinator
+    view.load(URLRequest(url: server.url.appendingPathComponent("redirect")))
+    for _ in 0..<200 {
+      if !opened.isEmpty || !pageErrors.isEmpty { break }
+      try await Task.sleep(for: .milliseconds(25))
+    }
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(opened == [destination])
+    #expect(pageErrors.isEmpty)
+    #expect(loading == false)
+  }
+
   @Test func iframePopupReturnsMessageBeforeClosing() async throws {
     _ = NSApplication.shared
     let server = try PopupFixtureServer()
@@ -175,6 +212,8 @@ private final class PopupFixtureServer {
         def log_message(self,*args): pass
         def do_GET(self):
           p=self.server.server_port
+          if self.path=='/redirect':
+            self.send_response(302);self.send_header('Location','otto-test-callback://oauth/complete');self.end_headers();return
           self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers()
           if self.path=='/frame':
             body=f'''<script>addEventListener('message',e=>{{if(e.data==='open')window.open('/provider','signin');if(e.data==='done')parent.postMessage('done','http://127.0.0.1:{p}')}});parent.postMessage('ready','http://127.0.0.1:{p}')</script>'''

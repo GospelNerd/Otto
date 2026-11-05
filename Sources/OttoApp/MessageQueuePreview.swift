@@ -18,6 +18,30 @@
         self?.sent.append(text)
         self?.state = .working
       })
+    private var checksBackgroundNotices: Bool {
+      ProcessInfo.processInfo.arguments.contains("--background-notice-preview")
+    }
+    private var notice: String {
+      PromptSubmission.backgroundCompletionPrefix + "has finished.\nTests passed.\n"
+        + PromptSubmission.backgroundCompletionSuffix
+    }
+    init() {
+      if checksBackgroundNotices {
+        queue.enqueue(agentID: node.id, text: notice)
+        queue.enqueue(agentID: node.id, text: "Continue with the next step")
+      }
+    }
+    var snapshot: AgentRuntimeSnapshot {
+      AgentRuntimeSnapshot(
+        id: node.id, provider: .codex, state: state, confidence: 1,
+        transcript: checksBackgroundNotices
+          ? [
+            AgentTranscriptEntry(role: .user, text: "Run the tests"),
+            AgentTranscriptEntry(role: .user, text: notice),
+            AgentTranscriptEntry(role: .assistant, text: "The tests passed. Continuing the task."),
+          ] : [])
+    }
+
     func finish() {
       state = .done
       queue.observe(agentID: node.id, state: .done)
@@ -39,8 +63,7 @@
         }.padding()
         AgentConversationBody(
           node: provider.node,
-          snapshot: AgentRuntimeSnapshot(
-            id: provider.node.id, provider: .codex, state: provider.state, confidence: 1),
+          snapshot: provider.snapshot,
           turnChanges: nil, turnDiff: { _ in nil }, revertTurn: {}, history: [],
           scale: 1, isSelected: true, presentation: .conversation, isStageMode: false,
           hidesSurfaceBar: true, enterStage: {}, focus: {}, setPresentation: { _ in },

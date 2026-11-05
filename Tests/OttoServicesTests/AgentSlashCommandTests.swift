@@ -89,6 +89,21 @@ struct AgentSlashCommandTests {
     #expect(providerPrompt.contains("[Otto active goal]"))
     #expect(providerPrompt.contains("Ship slash commands"))
     #expect(providerPrompt.hasSuffix("take the next step"))
+    let background = try await services.spawnMockAgent(at: WorldPoint(x: 0, y: 0))
+    try await waitUntil { services.fleet[background.agentID]?.state == .idle }
+    try await services.sendPrompt(agentID: background.agentID, prompt: "/goal Ship background work")
+    let notice =
+      PromptSubmission.backgroundCompletionPrefix + "has finished. "
+      + PromptSubmission.backgroundCompletionSuffix
+    try await services.sendPrompt(agentID: background.agentID, prompt: notice)
+    try await waitUntil { services.fleet[background.agentID]?.state == .done }
+    let completed = services.fleet[background.agentID]
+    #expect(completed?.lastPrompt?.contains(PromptSubmission.backgroundCompletionPrefix) != true)
+    #expect(
+      completed?.transcript.filter { $0.role == .user }.contains {
+        $0.text.contains(PromptSubmission.backgroundCompletionPrefix)
+      } == false)
+    #expect(completed?.transcript.last?.role == .assistant)
     await services.shutdown()
   }
 }

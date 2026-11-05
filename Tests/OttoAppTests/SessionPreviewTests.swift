@@ -1,4 +1,5 @@
 import Foundation
+import OttoModels
 import Testing
 
 @testable import OttoApp
@@ -16,4 +17,19 @@ struct SessionPreviewTests {
     #expect(ChatWorkspaceView.humanRequest(environment).isEmpty)
     #expect(ChatWorkspaceView.humanRequest("  Fix the login bug  ") == "Fix the login bug")
   }
+  @Test("Saved notices disappear from chat rows and session previews")
+  func backgroundNotice() {
+    let notice =
+      PromptSubmission.backgroundCompletionPrefix + "has finished.\n"
+      + PromptSubmission.backgroundCompletionSuffix
+    #expect(ChatWorkspaceView.humanRequest(notice).isEmpty)
+    #expect(
+      ChatWorkspaceView.humanRequest(
+        PromptSubmission.contextualPrompt(notice, context: "memory")
+      ).isEmpty)
+    #expect(
+      ChatWorkspaceView.humanRequest(
+        notice + PromptSubmission.queuedMessageSeparator + "Continue please") == "Continue please")
+  }
+
 }

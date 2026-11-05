@@ -37,7 +37,8 @@ public enum ApplicationToolBootstrap {
     memoryInbox: CompactMemoryInbox? = nil,
     subagentResolver: BotSubagentResolver? = nil,
     accountBoundary: AgentAccountBoundary? = nil,
-    emailOriginal: EmailApprovalSummary.OriginalLookup? = nil
+    emailOriginal: EmailApprovalSummary.OriginalLookup? = nil,
+    desktopControl: (any DesktopCommandRunning)? = nil
   ) async throws {
     let worktreeManager = worktrees ?? GitWorktreeManager(repositoryPath: workspacePath)
     let orchestration = orchestration ?? .live(workspacePath: workspacePath)
@@ -245,6 +246,20 @@ public enum ApplicationToolBootstrap {
       BrowserScreenshotTool(store: store, runtime: browserRuntime, workspacePath: workspacePath))
     try await registry.register(
       BrowserOpenExternalTool(opener: externalOpener ?? defaultExternalOpener))
+    let desktop: any DesktopCommandRunning = desktopControl ?? AgentDesktopRunner()
+    try await registry.register(DesktopStatusTool(runner: desktop))
+    try await registry.register(DesktopAppsTool(runner: desktop))
+    try await registry.register(DesktopLaunchTool(runner: desktop))
+    try await registry.register(DesktopSnapshotTool(runner: desktop))
+    try await registry.register(DesktopFindTool(runner: desktop))
+    try await registry.register(DesktopGetTool(runner: desktop))
+    try await registry.register(DesktopClickTool(runner: desktop))
+    try await registry.register(DesktopTypeTool(runner: desktop))
+    try await registry.register(DesktopActTool(runner: desktop))
+    try await registry.register(DesktopScrollTool(runner: desktop))
+    try await registry.register(DesktopPressTool(runner: desktop))
+    try await registry.register(DesktopWaitTool(runner: desktop))
+    try await registry.register(DesktopScreenshotTool(runner: desktop, workspacePath: workspacePath))
     try await registry.register(WorkspaceSurfaceSetTool(store: store))
     try await registry.register(ThemeListTool())
     try await registry.register(ThemeSetTool(store: store))

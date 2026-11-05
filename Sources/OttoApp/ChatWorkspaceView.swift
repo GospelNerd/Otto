@@ -1396,35 +1396,6 @@ struct ChatWorkspaceView: View {
     }
   }
 
-  /// Moves a work tab's page into the Browser place as a new tab. Both browsers share one
-  /// website data store, so the page arrives signed in; the agent keeps its own copy.
-  private func openInChatBrowser(_ url: String) {
-    guard url.hasPrefix("http"), let browserID = ensureChatBrowser(),
-      let browser = store.snapshot.canvases.flatMap(\.nodes).first(where: { $0.id == browserID }),
-      let canvasID = store.canvasID(containing: browserID)
-    else {
-      destination = .browser
-      return
-    }
-    var session = browser.browserSession ?? BrowserSession(url: BrowserDefaults.startURL)
-    let host = URL(string: url)?.host ?? "Loading…"
-    // A new tab ID makes the runtime load it on its next sync; an empty start tab is dropped
-    // rather than left behind.
-    let blank = [
-      BrowserDefaults.startURL, BrowserDefaults.legacyStartURL, BrowserDefaults.blankURL,
-    ]
-    if let active = session.activeTab, blank.contains(active.url) {
-      session.tabs.removeAll { $0.id == active.id }
-    }
-    let tab = BrowserTab(title: host, url: url)
-    session.tabs.append(tab)
-    session.activeTabID = tab.id
-    store.dispatch(.setBrowserSession(id: browserID, session: session), targetCanvasID: canvasID)
-    store.dispatch(
-      .setNodeContent(id: browserID, content: .browser(url: url)), targetCanvasID: canvasID)
-    destination = .browser
-  }
-
   /// Dashboards and Home cards keep their smoked-glass look: light themes borrow a dark palette.
   private var cardPalette: OttoPalette {
     OttoThemeCatalog.theme(id: store.activeCanvas.themeID).isLightAppearance
@@ -1983,7 +1954,10 @@ struct ChatWorkspaceView: View {
     guard let request,
       allAgentNodes.contains(where: { $0.id == request.agentID }),
       store.snapshot.canvases.contains(where: { canvas in
-        canvas.nodes.contains(where: { $0.id == request.browserID && $0.kind == .browser })
+        canvas.nodes.contains(where: {
+          $0.id == request.browserID && $0.kind == .browser
+            && $0.browserOwnerAgentID == request.agentID
+        })
       })
     else { return }
 
@@ -2187,7 +2161,11 @@ struct ChatWorkspaceView: View {
     guard let index = (workTabs[node.id] ?? []).firstIndex(where: { $0.id == tabID })
     else { return }
     guard let tab = workTabs[node.id]?[index] else { return }
-    if let browserID = tab.browserID {
+    if let browserID = tab.browserID,
+      store.snapshot.canvases.flatMap(\.nodes).contains(where: {
+        $0.id == browserID && $0.browserOwnerAgentID == node.id
+      })
+    {
       store.dispatch(.closeNode(browserID))
     }
     workTabs[node.id, default: []].remove(at: index)
@@ -2598,7 +2576,9 @@ struct ChatWorkspaceView: View {
   @ViewBuilder private func workBrowser(for node: OttoNode, tab: WorkTab) -> some View {
     if let browserID = tab.browserID,
       let canvasID = store.canvasID(containing: browserID),
-      let browser = store.snapshot.canvases.flatMap(\.nodes).first(where: { $0.id == browserID })
+      let browser = store.snapshot.canvases.flatMap(\.nodes).first(where: {
+        $0.id == browserID && $0.browserOwnerAgentID == node.id
+      })
     {
       BrowserBody(
         node: browser,
@@ -2620,12 +2600,7 @@ struct ChatWorkspaceView: View {
             .updateBrowserTab(id: browser.id, tabID: tabID, url: url, title: title),
             targetCanvasID: canvasID)
         },
-        chrome: .panel(openInBrowser: {
-          let url =
-            browser.browserSession?.activeTab?.url
-            ?? { if case .browser(let url) = browser.content { url } else { "" } }()
-          openInChatBrowser(url)
-        })
+        chrome: .panel
       )
       .id(browser.id)
     } else {
@@ -2848,8 +2823,10 @@ struct ChatWorkspaceView: View {
   /// context packets keep only the trailing user message, and injected instruction files or
   /// environment blocks are not a request at all.
   nonisolated static func humanRequest(_ text: String) -> String {
-    let body = PromptSubmission.originalUserText(
-      text.trimmingCharacters(in: .whitespacesAndNewlines))
+    guard
+      let body = PromptSubmission.visibleUserText(
+        text.trimmingCharacters(in: .whitespacesAndNewlines))
+    else { return "" }
     let injected = ["# AGENTS.md instructions", "<environment_context>", "<user_instructions>"]
     if injected.contains(where: { body.hasPrefix($0) }) { return "" }
     return body.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -31,11 +31,20 @@ public enum HarnessPluginCatalog {
     branded(name: "Terminal", raw: "terminal", source: ottoSource),
   ]
 
+  /// Desktop control (native apps through the accessibility tree) joins the built-ins once the
+  /// agent-desktop CLI is installed; before that a bot would only be told to set it up.
+  public static let desktopBuiltin = branded(name: "Desktop", raw: "computeruse", source: ottoSource)
+
+  public static func ottoBuiltins(desktopInstalled: Bool) -> [HarnessPlugin] {
+    desktopInstalled ? ottoBuiltins + [desktopBuiltin] : ottoBuiltins
+  }
+
   public static func plugins(
     for provider: AgentProvider,
     workspacePath: String,
     homeDirectory: String = NSHomeDirectory(),
-    fileManager: FileManager = .default
+    fileManager: FileManager = .default,
+    desktopInstalled: Bool = AgentDesktopLocator.isInstalled
   ) -> [HarnessPlugin] {
     var names: [String] = []
     for url in configURLs(
@@ -49,7 +58,7 @@ public enum HarnessPluginCatalog {
     let unique = orderedUnique(
       names.filter { !OttoMCPRegistration.serverNames.contains($0.lowercased()) })
     let harness = unique.map { branded(name: displayName($0), raw: $0, source: provider.rawValue) }
-    return ottoBuiltins + harness
+    return ottoBuiltins(desktopInstalled: desktopInstalled) + harness
   }
 
   /// How a person adds another MCP server or plugin for this harness.

@@ -23,7 +23,11 @@ public enum ProviderSessionStore {
 
     public init(sessionID: String? = nil, turns: [Turn] = []) {
       self.sessionID = sessionID
-      self.turns = turns
+      self.turns = turns.compactMap { turn in
+        guard turn.role == .user else { return turn }
+        guard let text = PromptSubmission.visibleUserText(turn.text) else { return nil }
+        return Turn(role: .user, text: text)
+      }
     }
   }
 

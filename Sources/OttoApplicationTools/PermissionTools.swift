@@ -144,6 +144,9 @@ public struct AgentRequestPermissionTool: OttoTool {
   private static func detail(toolName: String, input: JSONValue?) -> String {
     guard case .object(let object)? = input else { return "" }
     if let email = EmailApprovalSummary.text(toolName: toolName, input: object) { return email }
+    if let desktop = DesktopApprovalSummary.text(toolName: toolName, input: object) {
+      return desktop
+    }
     var bridged: [String: Any] = [:]
     for (key, value) in object {
       if case .string(let string) = value { bridged[key] = string }

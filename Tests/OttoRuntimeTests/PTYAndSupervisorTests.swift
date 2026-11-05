@@ -787,6 +787,43 @@ struct AgentSupervisorTests {
       ])
   }
 
+  @Test("Completion notices reach the provider without becoming user messages")
+  func backgroundNoticeInputOnlyHidden() async throws {
+    let supervisor = AgentSupervisor()
+    let id = try await supervisor.spawn(
+      provider: .shell,
+      specification: ProcessLaunchSpec(
+        executable: "/bin/sh",
+        arguments: [
+          "-c",
+          #"""
+          printf 'OTTO_STATUS:IDLE\n'
+          for turn in 1 2; do
+            IFS= read -r prompt
+            printf 'OTTO_STATUS:WORKING\n'
+            printf 'OTTO_RESULT:Completed %s\n' "$prompt"
+            printf 'OTTO_STATUS:DONE\n'
+          done
+          """#,
+        ],
+        workingDirectory: FileManager.default.currentDirectoryPath),
+      successfulExitState: .done)
+    try await waitForState(.idle, id: id, supervisor: supervisor)
+    try await supervisor.sendPrompt(agentID: id, prompt: "Run tests")
+    try await waitForState(.done, id: id, supervisor: supervisor)
+    let notice =
+      PromptSubmission.backgroundCompletionPrefix + "has finished. "
+      + PromptSubmission.backgroundCompletionSuffix
+    try await supervisor.sendPrompt(agentID: id, prompt: notice)
+    try await waitForState(.done, id: id, supervisor: supervisor)
+    let snapshot = try await supervisor.snapshot(agentID: id)
+    #expect(snapshot.lastPrompt == "Run tests")
+    #expect(snapshot.transcript.filter { $0.role == .user }.map(\.text) == ["Run tests"])
+    // The mock echoes provider input, proving delivery as well as visible assistant output.
+    #expect(snapshot.transcript.last?.role == .assistant)
+    #expect(snapshot.transcript.last?.text.contains(notice) == true)
+  }
+
   @Test("Hidden room turns do not appear in a bot's private transcript")
   func hiddenRoomTurnIsTranscriptIsolated() async throws {
     let supervisor = AgentSupervisor()

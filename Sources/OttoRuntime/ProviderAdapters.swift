@@ -228,7 +228,12 @@ public struct ClaudeCodeAdapter: AgentAdapter {
     To record a video of work in Otto (a product demo, a browser walkthrough, a bug \
     repro), call recording.start, perform the actions, then recording.stop — the finished \
     .mp4 lands in the workspace's Recordings folder. Return a clickable file link to the recording; a \
-    resource preview alone is not an accessible deliverable. Open the page being demonstrated before recording.
+    resource preview alone is not an accessible deliverable. Open the page being demonstrated before recording. \
+    To see or operate a native Mac app (Mail, Notes, Finder, Slack, System Settings, the menu \
+    bar), use the otto desktop tools: desktop.snapshot reads the app's elements with refs, \
+    desktop.click, desktop.type and desktop.act work on a ref without taking focus, and \
+    desktop.wait replaces sleeps. Snapshot again after every change to verify. If a desktop tool \
+    says it is not set up, call desktop.status and pass its setup line on to the person.
 
     Documents: use docs.create for user-facing documents, spreadsheets and presentations, and \
     docs.list, docs.read, docs.write or docs.suggest_edit to find and work with them. Tell the user \

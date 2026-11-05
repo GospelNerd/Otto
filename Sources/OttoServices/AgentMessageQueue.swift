@@ -47,6 +47,14 @@ public final class AgentMessageQueue: ObservableObject {
     schedule(agentID)
   }
 
+  /// Pending internal notices still dispatch and persist, but never appear as user drafts.
+  public func visibleMessages(agentID: UUID) -> [Message] {
+    messages[agentID, default: []].compactMap { message in
+      guard let text = PromptSubmission.visibleUserText(message.text) else { return nil }
+      return Message(id: message.id, text: text)
+    }
+  }
+
   public func remove(agentID: UUID, messageID: UUID) {
     // A claimed item is already being dispatched; it is no longer in the pending list.
     messages[agentID]?.removeAll { $0.id == messageID }
@@ -127,7 +135,7 @@ public final class AgentMessageQueue: ObservableObject {
   }
 
   /// Separates merged messages so the agent can tell where one ends and the next begins.
-  public nonisolated static let mergedMessageSeparator = "\n\n---\n\n"
+  public nonisolated static let mergedMessageSeparator = PromptSubmission.queuedMessageSeparator
 
   /// The leading run of messages to send as one prompt: everything up to the next slash command,
   /// or a single slash command on its own.

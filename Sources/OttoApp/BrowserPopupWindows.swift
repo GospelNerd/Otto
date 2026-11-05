@@ -4,6 +4,7 @@ import WebKit
 /// Own the child WebKit views for window.open, including the opener supplied by WebKit.
 @MainActor
 final class BrowserPopupWindows: NSObject, WKUIDelegate, WKNavigationDelegate, NSWindowDelegate {
+  var externalNavigation = BrowserExternalNavigation()
   private(set) var windows: [ObjectIdentifier: NSWindowController] = [:]
 
   /// Ordinary pages belong in tabs, even when opened by JavaScript. Clicked links always
@@ -54,6 +55,7 @@ final class BrowserPopupWindows: NSObject, WKUIDelegate, WKNavigationDelegate, N
     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures
   ) -> WKWebView? {
     guard navigationAction.targetFrame == nil else { return nil }
+    if let url = navigationAction.request.url, externalNavigation.handOff(url) { return nil }
     // Replacing this configuration or navigating the parent would break window.opener.
     let popup = WKWebView(frame: .zero, configuration: configuration)
     BrowserSignInDiagnostics.configure(popup)
@@ -85,6 +87,19 @@ final class BrowserPopupWindows: NSObject, WKUIDelegate, WKNavigationDelegate, N
   ) {
     BrowserFilePicker.present(parameters, for: webView, completionHandler: completionHandler)
   }
+  func webView(
+    _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+    decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+  ) {
+    if navigationAction.targetFrame?.isMainFrame != false,
+      let url = navigationAction.request.url, externalNavigation.handOff(url)
+    {
+      decisionHandler(.cancel)
+      return
+    }
+    decisionHandler(.allow)
+  }
+
   func webViewDidClose(_ webView: WKWebView) {
     BrowserSignInDiagnostics.record("popup.scriptClosed")
     guard let controller = windows.removeValue(forKey: ObjectIdentifier(webView)) else { return }
@@ -96,12 +111,14 @@ final class BrowserPopupWindows: NSObject, WKUIDelegate, WKNavigationDelegate, N
   func webView(
     _ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error
   ) {
+    if externalNavigation.handOffRedirectFailure(error) { return }
     BrowserSignInDiagnostics.record("popup.navigationFailed", code: (error as NSError).code)
   }
   func webView(
     _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
     withError error: any Error
   ) {
+    if externalNavigation.handOffRedirectFailure(error) { return }
     BrowserSignInDiagnostics.record(
       "popup.provisionalNavigationFailed", code: (error as NSError).code)
   }

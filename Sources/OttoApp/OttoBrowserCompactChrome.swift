@@ -8,8 +8,8 @@ import SwiftUI
 enum BrowserChromeStyle {
   /// The canvas node: toolbar, bookmarks, tab sidebar and agent rail.
   case canvas
-  /// A work tab beside a conversation: one slim row, plus a way to move the page to Browser.
-  case panel(openInBrowser: (() -> Void)?)
+  /// A conversation's own browser, with address controls and its own page tabs.
+  case panel
   /// Chat's Browser place: tabs across the top, the address inside the active tab.
   case place(aiVisible: Bool, toggleAI: () -> Void, askOtto: (String) -> Void)
 }
@@ -308,6 +308,7 @@ private struct StripTab: View {
   let tab: BrowserTab
   let select: () -> Void
   let close: () -> Void
+  var isActive = false
   @State private var hovering = false
 
   var body: some View {
@@ -315,7 +316,7 @@ private struct StripTab: View {
       BrowserFavicon(url: tab.url, size: 14)
       Text(tab.title.isEmpty ? "New Tab" : tab.title)
         .font(.ottoDisplay(12))
-        .foregroundStyle(palette.muted)
+        .foregroundStyle(isActive ? palette.paper : palette.muted)
         .lineLimit(1)
       Spacer(minLength: 0)
       Button(action: close) {
@@ -324,14 +325,15 @@ private struct StripTab: View {
       }
       .buttonStyle(.ottoChrome(cornerRadius: 4))
       .foregroundStyle(palette.muted)
-      .opacity(hovering ? 1 : 0)
-      .accessibilityHidden(!hovering)
+      .opacity(hovering || isActive ? 1 : 0)
+      .accessibilityHidden(!hovering && !isActive)
+      .accessibilityLabel("Close \(tab.title.isEmpty ? "New Tab" : tab.title)")
     }
     .padding(.leading, 10)
     .padding(.trailing, 6)
     .frame(width: 168, height: 30)
     .background(
-      palette.ink.opacity(hovering ? 0.32 : 0.2),
+      isActive ? palette.raised : palette.ink.opacity(hovering ? 0.32 : 0.2),
       in: RoundedRectangle(cornerRadius: 8, style: .continuous)
     )
     .contentShape(Rectangle())
@@ -344,8 +346,48 @@ private struct StripTab: View {
   }
 }
 
-/// A browser work tab beside a conversation: back, forward, reload, the address, and a button
-/// that moves the page to Chat's Browser place.
+/// Page tabs stay inside their owner browser; no action here routes to the Browser place.
+struct OttoBrowserPanelTabs: View {
+  let session: BrowserSession
+  let selectTab: (UUID) -> Void
+  let closeTab: (UUID) -> Void
+  let newTab: () -> Void
+
+  var body: some View {
+    HStack(spacing: 5) {
+      ScrollViewReader { proxy in
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 5) {
+            ForEach(session.tabs) { tab in
+              StripTab(
+                tab: tab, select: { selectTab(tab.id) }, close: { closeTab(tab.id) },
+                isActive: tab.id == session.activeTabID
+              )
+              .id(tab.id)
+              .contextMenu {
+                Button("Close Tab") { closeTab(tab.id) }
+              }
+            }
+          }
+        }
+        .ottoScrollChrome(axis: .horizontal, fade: 12, showsThumb: false)
+        .task(id: session.activeTabID) {
+          await Task.yield()
+          proxy.scrollTo(session.activeTabID)
+        }
+      }
+      CompactChromeButton(symbol: "plus", help: "New tab (⌘T)", action: newTab)
+      BrowserAllTabsMenu(
+        tabs: session.tabs, activeTabID: session.activeTabID,
+        selectTab: selectTab, closeTab: closeTab)
+    }
+    .padding(.horizontal, 10)
+    .padding(.bottom, 7)
+    .frame(height: 37)
+  }
+}
+
+/// Address controls for a browser owned by a conversation.
 struct OttoBrowserCompactBar: View {
   @Environment(\.ottoPalette) private var palette
   @FocusState private var addressFocused: Bool
@@ -356,7 +398,6 @@ struct OttoBrowserCompactBar: View {
   let goForward: () -> Void
   let reloadOrStop: () -> Void
   let submit: () -> Void
-  let openInBrowser: (() -> Void)?
 
   var body: some View {
     HStack(spacing: 4) {
@@ -398,18 +439,6 @@ struct OttoBrowserCompactBar: View {
           .strokeBorder(palette.paper.opacity(addressFocused ? 0.16 : 0.08)))
 
       BrowserPasswordsButton(tabID: state?.activeTabID)
-      if let openInBrowser {
-        Button(action: openInBrowser) {
-          Label("Open in Browser", systemImage: "arrow.up.forward.app")
-            .font(.ottoDisplay(11.5).weight(.medium))
-            .foregroundStyle(palette.paper)
-            .padding(.horizontal, 10)
-            .frame(height: 28)
-            .background(palette.paper.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-        }
-        .buttonStyle(.plain)
-        .help("Move this page to Browser, where you keep your own tabs")
-      }
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 7)

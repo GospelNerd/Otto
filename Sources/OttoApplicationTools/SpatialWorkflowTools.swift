@@ -143,7 +143,7 @@ public struct BrowserOpenTool: OttoTool {
   public static let definition = ToolDefinition(
     name: "browser.open",
     description:
-      "Opens a URL in the Otto browser. Agent, voice, and automation calls reuse the selected or latest browser as a new tab; the first call creates the browser node.",
+      "Opens a URL in the Otto browser. Agent calls reuse the browser owned by that bot or session as a new tab; the first call creates its browser. Voice and automation calls reuse the selected or latest browser.",
     inputSchema: .objectSchema(
       properties: [
         "url": .stringSchema(description: "HTTP or HTTPS URL to open"),
@@ -195,7 +195,9 @@ public struct BrowserOpenTool: OttoTool {
         session: mutation.session,
         navigatingTabID: mutation.openedTab.id
       )
-      if context.source == .agent, let agentID = context.sourceNodeID {
+      if context.source == .agent, let agentID = context.sourceNodeID,
+        mutation.node.browserOwnerAgentID == agentID
+      {
         await agentOpenHandler?(
           AgentBrowserOpenRequest(agentID: agentID, browserID: mutation.node.id))
       }
@@ -212,7 +214,7 @@ public struct BrowserOpenTabTool: OttoTool {
   public static let definition = ToolDefinition(
     name: "browser.open_tab",
     description:
-      "Opens a URL in a new tab inside an existing Otto browser. If nodeID is omitted, uses the selected browser or the latest browser node.",
+      "Opens a URL in a new tab inside an existing Otto browser. If nodeID is omitted, agent calls use their own bot or session browser; other callers use the selected or latest browser.",
     inputSchema: .objectSchema(
       properties: [
         "url": .stringSchema(description: "HTTP or HTTPS URL to open"),
@@ -246,9 +248,15 @@ public struct BrowserOpenTabTool: OttoTool {
     let url = try validatedURL(input.url)
     await gate.acquire()
     do {
+      let target: BrowserStoreOpenTarget
+      if input.nodeID == nil, context.source == .agent, let agentID = context.sourceNodeID {
+        target = .ownedByAgent(agentID, fallbackAt: WorldPoint(x: 0, y: 0))
+      } else {
+        target = .existing(input.nodeID)
+      }
       let mutation = try await openBrowserInStore(
         url: url,
-        target: .existing(input.nodeID),
+        target: target,
         store: store,
         context: context
       )
@@ -257,7 +265,9 @@ public struct BrowserOpenTabTool: OttoTool {
         session: mutation.session,
         navigatingTabID: mutation.openedTab.id
       )
-      if context.source == .agent, let agentID = context.sourceNodeID {
+      if context.source == .agent, let agentID = context.sourceNodeID,
+        mutation.node.browserOwnerAgentID == agentID
+      {
         await agentOpenHandler?(
           AgentBrowserOpenRequest(agentID: agentID, browserID: mutation.node.id))
       }

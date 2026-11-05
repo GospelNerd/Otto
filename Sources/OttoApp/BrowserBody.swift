@@ -141,7 +141,7 @@ struct BrowserBody: View {
     switch chrome {
     case .canvas:
       canvasLayout
-    case .panel(let openInBrowser):
+    case .panel:
       VStack(spacing: 0) {
         OttoBrowserCompactBar(
           address: $address,
@@ -150,9 +150,10 @@ struct BrowserBody: View {
           goBack: goBack,
           goForward: goForward,
           reloadOrStop: reloadOrStop,
-          submit: submitAddress,
-          openInBrowser: openInBrowser
+          submit: submitAddress
         )
+        OttoBrowserPanelTabs(
+          session: sessionValue, selectTab: selectTab, closeTab: closeTab, newTab: newTab)
         compactPage
       }
     case .place(let aiVisible, let toggleAI, _):
@@ -1037,6 +1038,8 @@ struct BrowserWebView: NSViewRepresentable {
     var appliedSelectionMode: Bool?
     var navigationContexts: [ObjectIdentifier: (revision: Int, requestedURL: String)] = [:]
     let popupWindows = BrowserPopupWindows()
+    var externalNavigation = BrowserExternalNavigation()
+    private var appHandoffPending = false
 
     init(
       nodeID: UUID,
@@ -1279,6 +1282,7 @@ struct BrowserWebView: NSViewRepresentable {
       windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
       if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
+        if externalNavigation.handOff(url) { return nil }
         if BrowserPopupWindows.switchesAccount(from: webView.url, to: url) {
           webView.load(navigationAction.request)
           return nil
@@ -1316,6 +1320,14 @@ struct BrowserWebView: NSViewRepresentable {
             && !BrowserHistoryNavigation.isPage(url))
       {
         decisionHandler(.cancel)
+        return
+      }
+      if navigationAction.targetFrame?.isMainFrame != false,
+        let url = navigationAction.request.url, externalNavigation.handOff(url)
+      {
+        appHandoffPending = true
+        decisionHandler(.cancel)
+        publish(webView, navigation: nil, isTerminal: true)
         return
       }
       decisionHandler(.allow)
@@ -1675,9 +1687,11 @@ struct BrowserWebView: NSViewRepresentable {
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation?) {
+      appHandoffPending = false
       publish(webView, navigation: navigation)
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
+      appHandoffPending = false
       publish(webView, navigation: navigation, isTerminal: true)
       if appliedSelectionMode == true {
         appliedSelectionMode = nil
@@ -1689,10 +1703,13 @@ struct BrowserWebView: NSViewRepresentable {
       didFailProvisionalNavigation navigation: WKNavigation?,
       withError error: any Error
     ) {
+      if consumeNavigationCancellation(error, in: webView, navigation: navigation) { return }
+      appHandoffPending = false
+      let handedOff = externalNavigation.handOffRedirectFailure(error)
       publish(
         webView,
         navigation: navigation,
-        errorDescription: error.localizedDescription,
+        errorDescription: handedOff ? nil : error.localizedDescription,
         isTerminal: true
       )
     }
@@ -1701,12 +1718,33 @@ struct BrowserWebView: NSViewRepresentable {
       didFail navigation: WKNavigation?,
       withError error: any Error
     ) {
+      if consumeNavigationCancellation(error, in: webView, navigation: navigation) { return }
+      appHandoffPending = false
+      let handedOff = externalNavigation.handOffRedirectFailure(error)
       publish(
         webView,
         navigation: navigation,
-        errorDescription: error.localizedDescription,
+        errorDescription: handedOff ? nil : error.localizedDescription,
         isTerminal: true
       )
+    }
+
+    private func consumeNavigationCancellation(
+      _ error: any Error, in webView: WKWebView, navigation: WKNavigation?
+    ) -> Bool {
+      let failure = error as NSError
+      let cancelled = failure.domain == NSURLErrorDomain && failure.code == NSURLErrorCancelled
+      // WebKit's policy-change error is expected only after we handed this load to an app.
+      let interrupted =
+        appHandoffPending && failure.domain == "WebKitErrorDomain"
+        && failure.code == 102
+      guard cancelled || interrupted else { return false }
+      if appHandoffPending {
+        publish(webView, navigation: navigation, isTerminal: true)
+        appHandoffPending = false
+      }
+      if let navigation { navigationContexts[ObjectIdentifier(navigation)] = nil }
+      return true
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
@@ -1740,7 +1778,7 @@ struct BrowserWebView: NSViewRepresentable {
           canGoForward: webView.backForwardList.forwardList.contains {
             BrowserHistoryNavigation.isPage($0.url)
           },
-          isLoading: webView.isLoading,
+          isLoading: isTerminal ? false : webView.isLoading,
           errorMessage: errorDescription,
           expectedRevision: context.revision
         ))

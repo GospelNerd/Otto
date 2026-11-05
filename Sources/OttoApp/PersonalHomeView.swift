@@ -41,6 +41,8 @@ struct PersonalHomeView: View {
   @AppStorage(OttoBuddyPreferences.everShownKey) private var ottoOnScreenShown = false
   @AppStorage(FirstRunPreferences.voiceCommandUsed) private var voiceCommandUsed = false
   @AppStorage(OttoCommunityLinks.discordOpenedKey) private var discordOpened = false
+  @State private var desktopControlReady = DesktopControlReadiness.isReady
+  @Environment(\.openSettings) private var openSettings
 
   /// Home takes its colours from the active theme, exactly like Chat, so the two screens look
   /// like one app on light and dark backgrounds alike.
@@ -656,7 +658,8 @@ struct PersonalHomeView: View {
         hasUsedVoiceCommand: voiceCommandUsed,
         hasMorningBrief: profile.briefRoutineID != nil,
         hasJoinedCommunity: discordOpened,
-        hasMetOttoOnScreen: ottoOnScreenShown),
+        hasMetOttoOnScreen: ottoOnScreenShown,
+        hasDesktopControl: desktopControlReady),
       botName: starterBot?.profile.name)
   }
 
@@ -694,6 +697,10 @@ struct PersonalHomeView: View {
       }
     }
     .accessibilityIdentifier("home.getting-started")
+    .onAppear { desktopControlReady = DesktopControlReadiness.isReady }
+    .onReceive(
+      NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+    ) { _ in desktopControlReady = DesktopControlReadiness.isReady }
   }
 
   private func gettingStartedRow(_ item: GettingStartedItem) -> some View {
@@ -744,6 +751,15 @@ struct PersonalHomeView: View {
     case .ottoOnScreen:
       return (
         "Turn on", { UserDefaults.standard.set(true, forKey: OttoBuddyPreferences.enabledKey) }
+      )
+    case .desktopControl:
+      return (
+        "Set up",
+        {
+          UserDefaults.standard.set(
+            OttoSettingsPage.desktop.rawValue, forKey: OttoSettingsPage.storageKey)
+          openSettings()
+        }
       )
     case .aboutYou, .voiceCommand: return nil
     }

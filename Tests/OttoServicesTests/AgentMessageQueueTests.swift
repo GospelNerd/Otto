@@ -37,6 +37,24 @@ struct AgentMessageQueueTests {
     #expect(condition())
   }
 
+  @Test func internalNoticesAreDeliveredButNeverShownAsQueuedDrafts() async throws {
+    let p = Provider()
+    let id = UUID()
+    let q = p.queue()
+    let notice =
+      PromptSubmission.backgroundCompletionPrefix + "has finished.\n"
+      + PromptSubmission.backgroundCompletionSuffix
+    q.enqueue(agentID: id, text: notice)
+    q.enqueue(agentID: id, text: "Continue please")
+    #expect(q.messages[id]?.count == 2)
+    #expect(q.visibleMessages(agentID: id).map(\.text) == ["Continue please"])
+    p.state = .done
+    q.observe(agentID: id, state: .done)
+    try await settle { !p.sent.isEmpty }
+    #expect(p.sent[0].contains(notice))
+    #expect(PromptSubmission.visibleUserText(p.sent[0]) == "Continue please")
+  }
+
   @Test func pendingMessagesMergeIntoOnePromptAndIgnoreDuplicateEvents() async throws {
     let p = Provider()
     let id = UUID()

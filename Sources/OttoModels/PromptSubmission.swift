@@ -40,6 +40,34 @@ public enum PromptSubmission {
     return text
   }
 
+  /// Shared with the queue and notifier so persisted mixed batches can be projected too.
+  public static let queuedMessageSeparator = "\n\n---\n\n"
+  public static let backgroundCompletionPrefix = "[Otto system notice] Background work you started "
+  public static let backgroundCompletionSuffix =
+    "Continue the task if this unblocks it, or tell the person what finished. Stay brief."
+
+  /// Background completions are provider input, but are not words the person typed. Unlike
+  /// hidden room controls, hiding this input must leave the agent's resulting reply visible.
+  /// Match complete queue items only; quoted notices and ordinary messages remain intact.
+  public static func visibleUserText(_ submitted: String) -> String? {
+    let original = originalUserText(submitted)
+    let parts = original.components(separatedBy: queuedMessageSeparator)
+    var visible: [String] = []
+    var index = 0
+    while index < parts.count {
+      if parts[index].hasPrefix(backgroundCompletionPrefix),
+        let end = parts[index...].firstIndex(where: { $0.hasSuffix(backgroundCompletionSuffix) })
+      {
+        // Child output can itself contain a queue separator; consume the complete notice.
+        index = end + 1
+      } else {
+        visible.append(parts[index])
+        index += 1
+      }
+    }
+    return verbatimText(from: visible.joined(separator: queuedMessageSeparator))
+  }
+
   public static func verbatimText(from draft: String) -> String? {
     guard draft.rangeOfCharacter(from: .whitespacesAndNewlines.inverted) != nil else {
       return nil

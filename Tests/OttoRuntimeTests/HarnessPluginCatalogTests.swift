@@ -152,3 +152,22 @@ struct HarnessPluginCatalogTests {
     #expect(PluginBrand.logo(for: "unknown-tool") == nil)
   }
 }
+
+@Suite("Desktop built-in plugin")
+struct DesktopBuiltinPluginTests {
+  @Test("Desktop joins Otto's built-ins only once agent-desktop is installed")
+  func desktopFollowsInstallState() throws {
+    let home = FileManager.default.temporaryDirectory.appending(
+      path: "otto-desktop-plugin-\(UUID().uuidString)", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+    let installed = HarnessPluginCatalog.plugins(
+      for: .claudeCode, workspacePath: home.path, homeDirectory: home.path, desktopInstalled: true)
+    #expect(installed.contains { $0.name == "Desktop" && $0.source == HarnessPluginCatalog.ottoSource })
+    #expect(installed.last?.name == "Desktop")
+    let missing = HarnessPluginCatalog.plugins(
+      for: .claudeCode, workspacePath: home.path, homeDirectory: home.path, desktopInstalled: false)
+    #expect(!missing.contains { $0.name == "Desktop" })
+    #expect(missing.count == HarnessPluginCatalog.ottoBuiltins.count)
+  }
+}

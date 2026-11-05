@@ -637,8 +637,11 @@ public actor AgentSupervisor {
 
   private func recordLaunchPrompt(_ prompt: String?, agentID: UUID) {
     guard let prompt, var agent = agents[agentID] else { return }
-    if !PromptSubmission.isHiddenControlPrompt(prompt) {
-      agent.snapshot.lastPrompt = prompt
+    if !PromptSubmission.isHiddenControlPrompt(prompt),
+      let visible = PromptSubmission.visibleUserText(prompt)
+    {
+      agent.snapshot.lastPrompt =
+        visible == PromptSubmission.originalUserText(prompt) ? prompt : visible
     }
     appendTranscript(.user, text: prompt, to: &agent)
     agents[agentID] = agent
@@ -795,8 +798,11 @@ public actor AgentSupervisor {
     agent.snapshot.state = .working
     agent.snapshot.confidence = 1
     agent.snapshot.result = nil
-    if !PromptSubmission.isHiddenControlPrompt(prompt) {
-      agent.snapshot.lastPrompt = prompt
+    if !PromptSubmission.isHiddenControlPrompt(prompt),
+      let visible = PromptSubmission.visibleUserText(prompt)
+    {
+      agent.snapshot.lastPrompt =
+        visible == PromptSubmission.originalUserText(prompt) ? prompt : visible
     }
     appendTranscript(.user, text: prompt, to: &agent)
     agents[agentID] = agent
@@ -1760,7 +1766,7 @@ public actor AgentSupervisor {
     if role == .user, PromptSubmission.isHiddenControlPrompt(text) { return }
     let projected: String?
     if role == .user {
-      projected = PromptSubmission.verbatimText(from: PromptSubmission.originalUserText(text))
+      projected = PromptSubmission.visibleUserText(text)
     } else {
       let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
       projected = trimmed.isEmpty ? nil : trimmed

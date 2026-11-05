@@ -219,10 +219,14 @@ public struct GettingStartedState: Sendable, Equatable {
   public var hasMorningBrief: Bool
   public var hasJoinedCommunity: Bool
   public var hasMetOttoOnScreen: Bool
+  /// Bots can see and operate native apps: the agent-desktop CLI is installed and Otto holds
+  /// Accessibility permission.
+  public var hasDesktopControl: Bool
 
   public init(
     hasPreferredName: Bool, hasBot: Bool, hasGivenTask: Bool, hasUsedVoiceCommand: Bool,
-    hasMorningBrief: Bool, hasJoinedCommunity: Bool = false, hasMetOttoOnScreen: Bool = false
+    hasMorningBrief: Bool, hasJoinedCommunity: Bool = false, hasMetOttoOnScreen: Bool = false,
+    hasDesktopControl: Bool = false
   ) {
     self.hasPreferredName = hasPreferredName
     self.hasBot = hasBot
@@ -231,11 +235,13 @@ public struct GettingStartedState: Sendable, Equatable {
     self.hasMorningBrief = hasMorningBrief
     self.hasJoinedCommunity = hasJoinedCommunity
     self.hasMetOttoOnScreen = hasMetOttoOnScreen
+    self.hasDesktopControl = hasDesktopControl
   }
 }
 
 public enum GettingStartedItemID: String, Sendable, CaseIterable {
-  case aboutYou, hireAgent, firstTask, voiceCommand, morningBrief, joinCommunity, ottoOnScreen
+  case aboutYou, hireAgent, firstTask, voiceCommand, morningBrief, joinCommunity, ottoOnScreen,
+    desktopControl
 }
 
 public struct GettingStartedItem: Identifiable, Sendable, Equatable {
@@ -270,6 +276,10 @@ public enum GettingStartedProgress {
         id: .ottoOnScreen, title: "Put Otto on your screen",
         detail: "He stays over every app and says when work is done",
         isComplete: state.hasMetOttoOnScreen),
+      GettingStartedItem(
+        id: .desktopControl, title: "Let bots use your Mac's apps",
+        detail: "Mail, Notes, Finder and more, without taking over your screen",
+        isComplete: state.hasDesktopControl),
     ]
   }
 }

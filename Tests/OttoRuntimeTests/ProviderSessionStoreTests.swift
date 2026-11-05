@@ -6,6 +6,21 @@ import Testing
 
 @Suite("Provider session store")
 struct ProviderSessionStoreTests {
+  @Test("Restored completion input is hidden while replies and user messages survive")
+  func completionNoticeHarvest() {
+    let notice =
+      PromptSubmission.backgroundCompletionPrefix + "has finished.\n"
+      + PromptSubmission.backgroundCompletionSuffix
+    let reply = ProviderSessionStore.Turn(role: .assistant, text: "The tests passed.")
+    let harvest = ProviderSessionStore.Harvest(turns: [
+      .init(role: .user, text: PromptSubmission.contextualPrompt(notice, context: "memory")),
+      reply,
+      .init(
+        role: .user, text: notice + PromptSubmission.queuedMessageSeparator + "Continue please"),
+    ])
+    #expect(harvest.turns == [reply, .init(role: .user, text: "Continue please")])
+  }
+
   private func makeHome() throws -> URL {
     let url = FileManager.default.temporaryDirectory
       .appending(path: "muse-session-store-\(UUID().uuidString)")

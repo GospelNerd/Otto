@@ -48,4 +48,50 @@ struct PromptSubmissionTests {
   func empty(_ source: String) {
     #expect(PromptSubmission.verbatimText(from: source) == nil)
   }
+  private var completionNotice: String {
+    PromptSubmission.backgroundCompletionPrefix + "has finished.\n<<<output\n"
+      + "Tests passed" + PromptSubmission.queuedMessageSeparator + "more output\noutput>>>\n\n"
+      + PromptSubmission.backgroundCompletionSuffix
+  }
+
+  @Test("Completion input is hidden through nested context envelopes")
+  func backgroundNoticeProjection() {
+    let notice = completionNotice
+    let wrapped = PromptSubmission.contextualPrompt(
+      PromptSubmission.contextualPrompt(notice, context: "page"), context: "memory")
+    #expect(PromptSubmission.visibleUserText(notice) == nil)
+    #expect(PromptSubmission.visibleUserText(wrapped) == nil)
+    #expect(!PromptSubmission.isHiddenControlPrompt(notice))
+  }
+
+  @Test("Merged notices preserve genuine user messages in either order")
+  func mixedBackgroundNoticeProjection() {
+    let separator = PromptSubmission.queuedMessageSeparator
+    let first = "  Keep my Unicode 👩🏽‍💻 and whitespace  "
+    let second = "Please continue"
+    for parts in [
+      [completionNotice, first, second],
+      [first, completionNotice, second],
+      [first, second, completionNotice],
+      [completionNotice, first, completionNotice, second],
+    ] {
+      #expect(
+        PromptSubmission.visibleUserText(parts.joined(separator: separator))
+          == first + separator + second)
+    }
+    #expect(
+      PromptSubmission.visibleUserText(completionNotice + separator + completionNotice) == nil)
+  }
+
+  @Test("Quoted and incomplete notices are still the person's words")
+  func noticeLookingUserText() {
+    for text in [
+      "Why did I get this?\n" + completionNotice,
+      PromptSubmission.backgroundCompletionPrefix + "what does this mean?",
+      "My separator" + PromptSubmission.queuedMessageSeparator + "is intentional",
+    ] {
+      #expect(PromptSubmission.visibleUserText(text) == text)
+    }
+  }
+
 }

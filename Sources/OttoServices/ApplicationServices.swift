@@ -3104,14 +3104,18 @@ public final class ApplicationServices: ObservableObject {
     guard let goal = agentCommandState.goal(for: agentID), goal.status == .active else {
       return prompt
     }
-    return """
+    let context = """
       [Otto active goal]
       Objective: \(goal.objective)
       Treat this objective as durable context for the turn. Make concrete progress toward it and \n+      report blockers plainly.
       [/Otto active goal]
-
-      \(prompt)
       """
+    // Keep completion notices at the start of their original queue item for transcript
+    // projection, even when a durable goal supplies additional provider-only context.
+    if PromptSubmission.visibleUserText(prompt) != PromptSubmission.originalUserText(prompt) {
+      return PromptSubmission.contextualPrompt(prompt, context: context)
+    }
+    return context + "\n\n" + prompt
   }
 
   private func restoreAgentLoops() {

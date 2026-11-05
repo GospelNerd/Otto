@@ -2086,7 +2086,7 @@ struct AgentConversationBody: View {
   }
 
   @ViewBuilder private var queuedMessages: some View {
-    let pending = messageQueue.messages[node.id, default: []]
+    let pending = messageQueue.visibleMessages(agentID: node.id)
     if !pending.isEmpty {
       VStack(alignment: .leading, spacing: 6 * scale) {
         HStack {

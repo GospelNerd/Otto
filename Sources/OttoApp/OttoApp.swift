@@ -259,6 +259,8 @@ struct OttoApp: App {
       CompletionNotificationSettingsView()
     case .ottoOnScreen:
       OttoBuddySettingsView()
+    case .desktop:
+      DesktopControlSettingsView()
     case .agents:
       AgentDefaultsSettingsView()
     case .models:
@@ -313,8 +315,8 @@ struct OttoApp: App {
 }
 
 enum OttoSettingsPage: String, CaseIterable, Identifiable {
-  case voice, shortcuts, appearance, notifications, ottoOnScreen, agents, models, accounts,
-    summarizer, websites, connectors, cloud, backup
+  case voice, shortcuts, appearance, notifications, ottoOnScreen, desktop, agents, models,
+    accounts, summarizer, websites, connectors, cloud, backup
 
   static let storageKey = "otto.settings.selectedPage"
 
@@ -327,6 +329,7 @@ enum OttoSettingsPage: String, CaseIterable, Identifiable {
     case .appearance: "Appearance"
     case .notifications: "Notifications"
     case .ottoOnScreen: "Otto on Screen"
+    case .desktop: "Desktop Control"
     case .agents: "Agents"
     case .models: "Models"
     case .accounts: "Accounts"
@@ -345,6 +348,7 @@ enum OttoSettingsPage: String, CaseIterable, Identifiable {
     case .appearance: "textformat.size"
     case .notifications: "bell"
     case .ottoOnScreen: "eyes"
+    case .desktop: "macwindow.on.rectangle"
     case .agents: "sparkles"
     case .models: "cpu"
     case .accounts: "person.2.crop.square.stack"

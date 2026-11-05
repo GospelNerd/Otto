@@ -114,6 +114,20 @@ struct BrowserChromeTests {
     #expect((menus[1400] ?? 0) >= 1)
   }
 
+  @Test @MainActor func drawerTabsStayReachableAtNarrowWidths() async throws {
+    _ = NSApplication.shared
+    for (count, width, expectedOverflow) in [(8, 420, true), (2, 900, false)] {
+      let tabs = (1...count).map { BrowserTab(title: "Page \($0)", url: "https://example.com/\($0)") }
+      let session = BrowserSession(tabs: tabs, activeTabID: tabs.last!.id)
+      let view = OttoBrowserPanelTabs(
+        session: session, selectTab: { _ in }, closeTab: { _ in }, newTab: {}
+      ).environment(\.ottoPalette, OttoPalette(theme: OttoThemeCatalog.theme(id: "shorelight")))
+      let probe = try await Self.probe(view, width: width)
+      #expect(probe.overflows == expectedOverflow)
+      #expect(probe.menus >= 1) // The all-tabs menu is always reachable outside the scroller.
+    }
+  }
+
   @MainActor private static func strip(_ session: BrowserSession) -> some View {
     OttoBrowserTabStrip(
       address: .constant(session.activeTab?.url ?? ""), addressFocusRequest: 0,
@@ -177,7 +191,10 @@ struct BrowserChromeTests {
     var driving = state
     driving.agentControlPhase = .acting
 
-    for theme in [OttoThemeCatalog.theme(id: "highfell"), OttoThemeCatalog.fieldNotes] {
+    for theme in [
+      OttoThemeCatalog.theme(id: "shorelight"), OttoThemeCatalog.theme(id: "highfell"),
+      OttoThemeCatalog.fieldNotes,
+    ] {
       let palette = OttoPalette(theme: theme)
       let view = VStack(spacing: 0) {
         OttoBrowserTabStrip(
@@ -190,8 +207,11 @@ struct BrowserChromeTests {
           .clipShape(RoundedRectangle(cornerRadius: 10)).padding([.horizontal, .bottom], 9)
         OttoBrowserCompactBar(
           address: .constant("https://www.linkedin.com/feed/"), addressFocusRequest: 0,
-          state: driving, goBack: {}, goForward: {}, reloadOrStop: {}, submit: {},
-          openInBrowser: {}
+          state: driving, goBack: {}, goForward: {}, reloadOrStop: {}, submit: {}
+        )
+        .frame(width: 660)
+        OttoBrowserPanelTabs(
+          session: session, selectTab: { _ in }, closeTab: { _ in }, newTab: {}
         )
         .frame(width: 660)
         HStack(spacing: 18) {
