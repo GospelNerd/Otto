@@ -68,7 +68,9 @@ struct SkillsView: View {
     .onAppear { library.refresh() }
     .sheet(isPresented: $creating) {
       NewSkillSheet { name, description, instructions in
-        attempt { try library.create(name: name, description: description, instructions: instructions) }
+        attempt {
+          try library.create(name: name, description: description, instructions: instructions)
+        }
       }
     }
   }
@@ -133,7 +135,9 @@ struct SkillsView: View {
       TextField("Search skills", text: $query).textFieldStyle(.plain).font(.ottoDisplay(13))
     }
     .padding(.horizontal, 10).padding(.vertical, 7)
-    .background(palette.raised.opacity(0.8), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .background(
+      palette.raised.opacity(0.8), in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+    )
     .frame(maxWidth: 360)
   }
 
@@ -172,7 +176,8 @@ struct SkillsView: View {
     .padding(.horizontal, 12).padding(.vertical, 10)
     .background(
       active ? palette.raised : palette.raised.opacity(0.8),
-      in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+    )
     .overlay(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
         .strokeBorder(palette.signal.opacity(active ? 0.6 : 0), lineWidth: 1))
@@ -199,7 +204,8 @@ struct SkillsView: View {
           ? "Written in Otto, so every agent can always use it."
           : entry.isInOtto
             ? "Every bot, team and session can use this. Turn off to keep it in \(harnessNames(entry)) only."
-            : "Let every bot, team and session use this, in Codex, Claude Code, Otto Harness and the rest.")
+            : "Let every bot, team and session use this, in Codex, Claude Code, Otto Harness and the rest."
+      )
       .accessibilityIdentifier("skills.share.\(entry.name)")
     }
     .fixedSize()

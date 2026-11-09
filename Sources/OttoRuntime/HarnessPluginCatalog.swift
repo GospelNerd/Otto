@@ -33,7 +33,8 @@ public enum HarnessPluginCatalog {
 
   /// Desktop control (native apps through the accessibility tree) joins the built-ins once the
   /// agent-desktop CLI is installed; before that a bot would only be told to set it up.
-  public static let desktopBuiltin = branded(name: "Desktop", raw: "computeruse", source: ottoSource)
+  public static let desktopBuiltin = branded(
+    name: "Desktop", raw: "computeruse", source: ottoSource)
 
   public static func ottoBuiltins(desktopInstalled: Bool) -> [HarnessPlugin] {
     desktopInstalled ? ottoBuiltins + [desktopBuiltin] : ottoBuiltins

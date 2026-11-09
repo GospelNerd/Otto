@@ -77,7 +77,8 @@ extension ApplicationServices {
   /// rest remain reachable through skill.list.
   func skillPromptLines(forNode nodeID: UUID) -> [String] {
     availableOttoSkills(forNode: nodeID).prefix(60).map { entry in
-      let description = entry.description.count > 200
+      let description =
+        entry.description.count > 200
         ? String(entry.description.prefix(197)) + "…" : entry.description
       return description.isEmpty ? entry.name : "\(entry.name) — \(description)"
     }

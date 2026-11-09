@@ -259,7 +259,8 @@ public enum ApplicationToolBootstrap {
     try await registry.register(DesktopScrollTool(runner: desktop))
     try await registry.register(DesktopPressTool(runner: desktop))
     try await registry.register(DesktopWaitTool(runner: desktop))
-    try await registry.register(DesktopScreenshotTool(runner: desktop, workspacePath: workspacePath))
+    try await registry.register(
+      DesktopScreenshotTool(runner: desktop, workspacePath: workspacePath))
     try await registry.register(WorkspaceSurfaceSetTool(store: store))
     try await registry.register(ThemeListTool())
     try await registry.register(ThemeSetTool(store: store))

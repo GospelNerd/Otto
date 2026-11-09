@@ -298,3 +298,88 @@ private struct PersistenceEchoTool: OttoTool {
 /// rootless Linux box) can point OTTO_TEST_SQLITE3 at another binary.
 private let sqlite3Executable = URL(
   fileURLWithPath: ProcessInfo.processInfo.environment["OTTO_TEST_SQLITE3"] ?? "/usr/bin/sqlite3")
+
+@Suite("Disk-full reporting")
+struct SQLiteWorkspaceStoreDiskFullTests {
+  // A tiny RAM disk is the only way to reach SQLITE_FULL honestly; faking the code would test
+  // the switch statement rather than the behaviour that misled a real user.
+  private func withTinyVolume(_ body: (URL) async throws -> Void) async throws {
+    let sectors = 2048  // 1 MiB at 512 B/sector — large enough to open, too small to grow.
+    let attach = Process()
+    attach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+    attach.arguments = ["attach", "-nomount", "ram://\(sectors)"]
+    let out = Pipe()
+    attach.standardOutput = out
+    try attach.run()
+    attach.waitUntilExit()
+    let device = String(
+      decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard attach.terminationStatus == 0, !device.isEmpty else {
+      throw PersistenceTestSkip.ramDiskUnavailable
+    }
+    defer {
+      let detach = Process()
+      detach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+      detach.arguments = ["detach", "-force", device]
+      try? detach.run()
+      detach.waitUntilExit()
+    }
+
+    let mount = FileManager.default.temporaryDirectory
+      .appending(path: "otto-full-\(UUID().uuidString)", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: mount) }
+
+    let format = Process()
+    format.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+    format.arguments = ["eraseVolume", "HFS+", "OttoFull", device]
+    format.standardOutput = Pipe()
+    format.standardError = Pipe()
+    try format.run()
+    format.waitUntilExit()
+    guard format.terminationStatus == 0 else { throw PersistenceTestSkip.ramDiskUnavailable }
+
+    try await body(URL(fileURLWithPath: "/Volumes/OttoFull"))
+  }
+
+  @Test("Reports a full volume as diskFull, not a database failure")
+  func reportsDiskFull() async throws {
+    try await withTinyVolume { volume in
+      let store = SQLiteWorkspaceStore(
+        path: volume.appending(path: "workspace.sqlite").path)
+
+      // Fill the volume so SQLite cannot extend the database or its WAL.
+      let ballast = volume.appending(path: "ballast")
+      let chunk = Data(count: 64 * 1024)
+      _ = FileManager.default.createFile(atPath: ballast.path, contents: Data())
+      if let handle = try? FileHandle(forWritingTo: ballast) {
+        while (try? handle.write(contentsOf: chunk)) != nil {}
+        try? handle.close()
+      }
+
+      var caught: Error?
+      do {
+        try await store.migrate()
+        let canvas = OttoCanvas(name: "Disk full", nodes: [])
+        try await store.save(
+          WorkspaceSnapshot(canvases: [canvas], activeCanvasID: canvas.id))
+      } catch {
+        caught = error
+      }
+
+      let error = try #require(caught as? PersistenceError)
+      guard case .diskFull(let available) = error else {
+        Issue.record("expected .diskFull, got \(error)")
+        return
+      }
+      // The message must point at the disk, never at the database.
+      let described = try #require(error.errorDescription)
+      #expect(described.contains("disk is full"))
+      #expect(!described.contains("database operation failed"))
+      if let available { #expect(available >= 0) }
+    }
+  }
+}
+
+enum PersistenceTestSkip: Error { case ramDiskUnavailable }

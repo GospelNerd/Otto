@@ -192,7 +192,9 @@ struct AgentPermissionTests {
     #expect(spec.arguments.last == "List the repository files.")
   }
 
-  @Test("Claude pre-approves only skill reads and the Otto tools Otto confirms itself, never the whole server")
+  @Test(
+    "Claude pre-approves only skill reads and the Otto tools Otto confirms itself, never the whole server"
+  )
   func claudeAllowsOnlySelfConfirmingOttoTools() async throws {
     let adapter = ClaudeCodeAdapter(executablePath: "/bin/echo")
     let spec = try await adapter.buildLaunchSpec(
@@ -206,7 +208,8 @@ struct AgentPermissionTests {
     let index = try #require(spec.arguments.firstIndex(of: "--allowedTools"))
     #expect(
       spec.arguments[index + 1]
-        == "mcp__otto__skill_list,mcp__otto__skill_read,mcp__otto__smtp_send,mcp__otto__calendar_create_event")
+        == "mcp__otto__skill_list,mcp__otto__skill_read,mcp__otto__smtp_send,mcp__otto__calendar_create_event"
+    )
     // A server-wide grant would let terminal.run, agent.spawn, ... skip every prompt.
     #expect(!spec.arguments.contains("mcp__otto"))
     #expect(!spec.arguments[index + 1].contains("terminal_run"))

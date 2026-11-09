@@ -223,9 +223,15 @@ public enum ChatChannelReplyFormatter {
     text = replace(#"!\[([^\]]*)\]\([^)]*\)"#, in: text) { groups in
       groups[1].isEmpty ? "(image in Otto)" : "(image in Otto: \(groups[1]))"
     }
-    text = replace(#"\[([^\]]+)\]\(<?([^)>\s]+)>?\)"#, in: text) { groups in
+    // A target in angle brackets may hold spaces and parentheses — Otto's own tools say
+    // "return [Open document](<path>)", and Mac paths have both. A title after the target is
+    // dropped: a phone chat has nowhere to show it. The alternation stays non-capturing;
+    // NSRegularExpression refuses a capturing one right after the escaped "(".
+    text = replace(
+      #"\[([^\]]+)\]\((?:<([^<>\n]*)>|([^)>\s]+))(?:[ \t]+("[^"]*"|'[^']*'))?[ \t]*\)"#, in: text
+    ) { groups in
       let title = groups[1]
-      let target = groups[2]
+      let target = groups[2].isEmpty ? groups[3] : groups[2]
       if target.hasPrefix("http://") || target.hasPrefix("https://") {
         return title == target ? target : "\(title) (\(target))"
       }

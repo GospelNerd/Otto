@@ -7,7 +7,8 @@ import Testing
 struct SkillLibraryTests {
   @Test("Frontmatter names and folded descriptions are read; missing names use the folder")
   func parsesFrontmatter() {
-    let folded = "---\nname: blog-google\ndescription: >\n  Google API integration\n  for blogs.\n---\n\n# Body"
+    let folded =
+      "---\nname: blog-google\ndescription: >\n  Google API integration\n  for blogs.\n---\n\n# Body"
     let meta = SkillParser.metadata(folded, folderName: "x")
     #expect(meta.name == "blog-google")
     #expect(meta.description == "Google API integration for blogs.")
@@ -70,7 +71,9 @@ struct SkillLibraryTests {
     try store.addToOtto(entry)
     let copied = home.url.appending(path: "Library/Application Support/Otto/Skills/deploy/SKILL.md")
     #expect(FileManager.default.fileExists(atPath: copied.path))
-    #expect(FileManager.default.fileExists(atPath: home.url.appending(path: ".codex/skills/deploy/SKILL.md").path))
+    #expect(
+      FileManager.default.fileExists(
+        atPath: home.url.appending(path: ".codex/skills/deploy/SKILL.md").path))
     #expect(scanner.scan().first?.sources == [.otto, .codex])
 
     // Switching "All agents" off trashes only Otto's copy; Codex keeps its own.
@@ -78,7 +81,9 @@ struct SkillLibraryTests {
     #expect(store.canStopSharing(shared))
     try store.stopSharing(shared)
     #expect(!FileManager.default.fileExists(atPath: copied.path))
-    #expect(FileManager.default.fileExists(atPath: home.url.appending(path: ".codex/skills/deploy/SKILL.md").path))
+    #expect(
+      FileManager.default.fileExists(
+        atPath: home.url.appending(path: ".codex/skills/deploy/SKILL.md").path))
     #expect(scanner.scan().first?.sources == [.codex])
     #expect(store.entries.first?.isInOtto == false)
   }
@@ -92,7 +97,10 @@ struct SkillLibraryTests {
     let entry = try #require(SkillScanner(home: home.url).scan().first)
     #expect(!store.canStopSharing(entry))
     try store.stopSharing(entry)
-    #expect(FileManager.default.fileExists(atPath: home.url.appending(path: "Library/Application Support/Otto/Skills/mine/SKILL.md").path))
+    #expect(
+      FileManager.default.fileExists(
+        atPath: home.url.appending(path: "Library/Application Support/Otto/Skills/mine/SKILL.md")
+          .path))
   }
 }
 

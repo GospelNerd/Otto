@@ -27,7 +27,8 @@ public enum AgentDesktopLocator {
 
   /// Homebrew first, then the npm-style global installs. An agent shell inherits a richer PATH
   /// than the app, so the list is explicit rather than read from the environment.
-  public static func searchDirectories(homeDirectory: String, fileManager: FileManager) -> [String] {
+  public static func searchDirectories(homeDirectory: String, fileManager: FileManager) -> [String]
+  {
     var directories = [
       "/opt/homebrew/bin", "/usr/local/bin", "\(homeDirectory)/.local/bin",
       "\(homeDirectory)/.npm-global/bin", "\(homeDirectory)/.volta/bin",

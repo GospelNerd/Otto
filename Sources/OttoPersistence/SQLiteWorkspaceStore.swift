@@ -10,6 +10,7 @@ import OttoTools
 public enum PersistenceError: Error, LocalizedError {
   case openDatabase(String)
   case execute(String)
+  case diskFull(available: Int64?)
   case encode(String)
   case decode(String)
   case unsupportedSchema(found: Int, supported: Int)
@@ -18,11 +19,21 @@ public enum PersistenceError: Error, LocalizedError {
     switch self {
     case .openDatabase(let message): "Could not open Otto workspace: \(message)"
     case .execute(let message): "Otto database operation failed: \(message)"
+    case .diskFull(let available):
+      """
+      Otto could not save because the disk is full\
+      \(available.map { " (\(Self.formatBytes($0)) free)" } ?? ""). \
+      Free up space and try again.
+      """
     case .encode(let message): "Could not encode workspace: \(message)"
     case .decode(let message): "Could not decode workspace: \(message)"
     case .unsupportedSchema(let found, let supported):
       "Otto workspace schema \(found) is newer than this build supports (\(supported))."
     }
+  }
+
+  private static func formatBytes(_ bytes: Int64) -> String {
+    ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
   }
 }
 
@@ -213,7 +224,7 @@ public actor SQLiteWorkspaceStore {
           database, "SELECT payload FROM workspace_snapshots WHERE id = 1", -1, &statement, nil)
           == SQLITE_OK
       else {
-        throw PersistenceError.execute(errorMessage(database))
+        throw storeError(database)
       }
       defer { sqlite3_finalize(statement) }
       guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
@@ -240,7 +251,7 @@ public actor SQLiteWorkspaceStore {
           database, "SELECT payload FROM workspace_snapshots WHERE id = 1", -1, &statement, nil)
           == SQLITE_OK
       else {
-        throw PersistenceError.execute(errorMessage(database))
+        throw storeError(database)
       }
       defer { sqlite3_finalize(statement) }
       guard sqlite3_step(statement) == SQLITE_ROW,
@@ -287,7 +298,7 @@ public actor SQLiteWorkspaceStore {
         let sql =
           "INSERT INTO workspace_snapshots(id, payload, updated_at) VALUES(1, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at"
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-          throw PersistenceError.execute(errorMessage(database))
+          throw storeError(database)
         }
         defer { sqlite3_finalize(statement) }
         let result = data.withUnsafeBytes { buffer in
@@ -296,7 +307,7 @@ public actor SQLiteWorkspaceStore {
             unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         }
         guard result == SQLITE_OK, sqlite3_step(statement) == SQLITE_DONE else {
-          throw PersistenceError.execute(errorMessage(database))
+          throw storeError(database)
         }
         try synchronizeNormalized(snapshot, on: database)
         try execute("COMMIT", on: database)
@@ -312,10 +323,10 @@ public actor SQLiteWorkspaceStore {
     return try withDatabase { database in
       var statement: OpaquePointer?
       guard sqlite3_prepare_v2(database, "PRAGMA integrity_check", -1, &statement, nil) == SQLITE_OK
-      else { throw PersistenceError.execute(errorMessage(database)) }
+      else { throw storeError(database) }
       defer { sqlite3_finalize(statement) }
       guard sqlite3_step(statement) == SQLITE_ROW else {
-        throw PersistenceError.execute(errorMessage(database))
+        throw storeError(database)
       }
       return columnText(statement, 0) == "ok"
     }
@@ -338,7 +349,7 @@ public actor SQLiteWorkspaceStore {
       let sql =
         "SELECT id, request_id, actor_id, event_type, succeeded, risk_level, created_at FROM audit_events ORDER BY created_at, id"
       guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-        throw PersistenceError.execute(errorMessage(database))
+        throw storeError(database)
       }
       defer { sqlite3_finalize(statement) }
       var records: [ToolAuditRecord] = []
@@ -380,7 +391,7 @@ public actor SQLiteWorkspaceStore {
       "INSERT INTO canvases(id, name, theme_id, layout_mode, viewport_json, created_at, updated_at, last_opened_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)"
     var statement: OpaquePointer?
     guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-      throw PersistenceError.execute(errorMessage(database))
+      throw storeError(database)
     }
     defer { sqlite3_finalize(statement) }
     try bindText(canvas.id.uuidString, at: 1, to: statement, database: database)
@@ -392,7 +403,7 @@ public actor SQLiteWorkspaceStore {
     sqlite3_bind_double(statement, 7, canvas.updatedAt.timeIntervalSince1970)
     sqlite3_bind_double(statement, 8, canvas.updatedAt.timeIntervalSince1970)
     guard sqlite3_step(statement) == SQLITE_DONE else {
-      throw PersistenceError.execute(errorMessage(database))
+      throw storeError(database)
     }
   }
 
@@ -406,7 +417,7 @@ public actor SQLiteWorkspaceStore {
       "INSERT INTO nodes(id, canvas_id, kind, display_name, subtype, world_rect_json, z_index, configuration_json, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     var statement: OpaquePointer?
     guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-      throw PersistenceError.execute(errorMessage(database))
+      throw storeError(database)
     }
     defer { sqlite3_finalize(statement) }
     try bindText(node.id.uuidString, at: 1, to: statement, database: database)
@@ -428,18 +439,18 @@ public actor SQLiteWorkspaceStore {
     sqlite3_bind_double(statement, 10, node.createdAt.timeIntervalSince1970)
     sqlite3_bind_double(statement, 11, updatedAt.timeIntervalSince1970)
     guard sqlite3_step(statement) == SQLITE_DONE else {
-      throw PersistenceError.execute(errorMessage(database))
+      throw storeError(database)
     }
   }
 
   private func scalarInt(_ sql: String, on database: OpaquePointer) throws -> Int {
     var statement: OpaquePointer?
     guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-      throw PersistenceError.execute(errorMessage(database))
+      throw storeError(database)
     }
     defer { sqlite3_finalize(statement) }
     guard sqlite3_step(statement) == SQLITE_ROW else {
-      throw PersistenceError.execute(errorMessage(database))
+      throw storeError(database)
     }
     return Int(sqlite3_column_int64(statement, 0))
   }
@@ -454,7 +465,7 @@ public actor SQLiteWorkspaceStore {
       sqlite3_bind_text(
         statement, index, value, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         == SQLITE_OK
-    else { throw PersistenceError.execute(errorMessage(database)) }
+    else { throw storeError(database) }
   }
 
   private func bindOptionalText(
@@ -481,7 +492,7 @@ public actor SQLiteWorkspaceStore {
         statement, index, buffer.baseAddress, Int32(buffer.count),
         unsafeBitCast(-1, to: sqlite3_destructor_type.self))
     }
-    guard result == SQLITE_OK else { throw PersistenceError.execute(errorMessage(database)) }
+    guard result == SQLITE_OK else { throw storeError(database) }
   }
 
   private func columnText(_ statement: OpaquePointer?, _ index: Int32) -> String {
@@ -505,12 +516,20 @@ public actor SQLiteWorkspaceStore {
       let database
     else {
       let message = database.map(errorMessage) ?? "Unknown SQLite error"
+      let primary = database.map { sqlite3_extended_errcode($0) & 0xFF }
       if let database { sqlite3_close(database) }
+      // Creating the database or its journal is itself a write, so a full volume can fail the
+      // open rather than a later statement.
+      if primary == SQLITE_FULL
+        || (primary == SQLITE_CANTOPEN && (availableBytes() ?? .max) < Self.diskFullThreshold)
+      {
+        throw PersistenceError.diskFull(available: availableBytes())
+      }
       throw PersistenceError.openDatabase(message)
     }
     do {
       guard sqlite3_busy_timeout(database, 5_000) == SQLITE_OK else {
-        throw PersistenceError.execute(errorMessage(database))
+        throw storeError(database)
       }
       try execute("PRAGMA journal_mode=WAL", on: database)
       // NORMAL with WAL still guarantees database integrity on crash; FULL adds an fsync per
@@ -526,13 +545,40 @@ public actor SQLiteWorkspaceStore {
 
   private func execute(_ sql: String, on database: OpaquePointer) throws {
     guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
-      throw PersistenceError.execute(errorMessage(database))
+      throw storeError(database)
     }
   }
 
   private func errorMessage(_ database: OpaquePointer) -> String {
     String(cString: sqlite3_errmsg(database))
   }
+
+  /// Free space on the volume holding the store, or nil when it cannot be determined.
+  private func availableBytes() -> Int64? {
+    let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
+    return try? directory.resourceValues(
+      forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+    ).volumeAvailableCapacityForImportantUsage
+  }
+
+  // An exhausted volume surfaces as SQLITE_FULL, and sometimes only as a write or fsync
+  // SQLITE_IOERR. SQLite's own wording for both is "database or disk is full", which sends
+  // people inspecting a database that is fine, so the volume is named instead. An IOERR is
+  // only reported as disk-full when space has genuinely run out; otherwise a real I/O fault
+  // would be mislabelled as something the user can fix by deleting files.
+  private func storeError(_ database: OpaquePointer) -> PersistenceError {
+    let primary = sqlite3_extended_errcode(database) & 0xFF
+    if primary == SQLITE_FULL { return .diskFull(available: availableBytes()) }
+    if primary == SQLITE_IOERR, let available = availableBytes(),
+      available < Self.diskFullThreshold
+    {
+      return .diskFull(available: available)
+    }
+    return .execute(errorMessage(database))
+  }
+
+  // Headroom below which a write-path I/O error is attributed to the volume being full.
+  private static let diskFullThreshold: Int64 = 64 * 1024 * 1024
 }
 
 extension SQLiteWorkspaceStore {
@@ -544,7 +590,7 @@ extension SQLiteWorkspaceStore {
       sql += " ORDER BY created_at DESC LIMIT ?"
       var statement: OpaquePointer?
       guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-        throw PersistenceError.execute(errorMessage(database))
+        throw storeError(database)
       }
       defer { sqlite3_finalize(statement) }
       var index: Int32 = 1
@@ -585,7 +631,7 @@ extension SQLiteWorkspaceStore: ToolAuditSink {
           "INSERT INTO audit_events(id, request_id, actor_type, actor_id, event_type, risk_level, succeeded, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-          throw PersistenceError.execute(errorMessage(database))
+          throw storeError(database)
         }
         defer { sqlite3_finalize(statement) }
         try bindText(record.id.uuidString, at: 1, to: statement, database: database)
@@ -597,7 +643,7 @@ extension SQLiteWorkspaceStore: ToolAuditSink {
         sqlite3_bind_int(statement, 7, record.succeeded ? 1 : 0)
         sqlite3_bind_double(statement, 8, record.timestamp.timeIntervalSince1970)
         guard sqlite3_step(statement) == SQLITE_DONE else {
-          throw PersistenceError.execute(errorMessage(database))
+          throw storeError(database)
         }
       }
     } catch {

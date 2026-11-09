@@ -111,6 +111,32 @@ struct ChatChannelReplyFormatterTests {
     )
   }
 
+  @Test("A link target in angle brackets may contain spaces")
+  func linkTargetWithSpaces() {
+    // Otto's own tools tell an agent to return "[Open document](<path>)", and Mac paths have spaces.
+    #expect(
+      ChatChannelReplyFormatter.plainText(
+        "Saved to [Open document](</Users/max/My Report.md>) for the details.")
+        == "Saved to Open document (in Otto) for the details.")
+  }
+
+  @Test("A link with a title is rewritten, not left as Markdown")
+  func linkWithATitle() {
+    #expect(
+      ChatChannelReplyFormatter.plainText("Saved to [Report](</Users/max/Report.md> \"Open it\").")
+        == "Saved to Report (in Otto).")
+    #expect(
+      ChatChannelReplyFormatter.plainText("See [Otto](https://openotto.io/docs \"Otto docs\").")
+        == "See Otto (https://openotto.io/docs).")
+  }
+
+  @Test("A bracketed target may contain parentheses")
+  func linkTargetWithParentheses() {
+    #expect(
+      ChatChannelReplyFormatter.plainText("[Doc](</Users/max/Report (final).md>)")
+        == "Doc (in Otto)")
+  }
+
   @Test("Plain text passes through unchanged")
   func plain() {
     #expect(ChatChannelReplyFormatter.plainText("Done") == "Done")

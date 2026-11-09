@@ -271,6 +271,19 @@ final class BrainSearchIndex {
     }
   }
 
+  /// The record ids the index currently covers. `ProjectBrainStore` compares these with the
+  /// canonical files when the store opens, so an index that missed a file — one copied in by
+  /// the `.muse` → `.otto` workspace merge, say — is rebuilt instead of leaving search blind.
+  func indexedIDs() -> Set<String> {
+    var ids: Set<String> = []
+    try? withStatement("SELECT DISTINCT id FROM brain_fts") { statement in
+      while sqlite3_step(statement) == SQLITE_ROW {
+        if let id = self.column(statement, 0) { ids.insert(id) }
+      }
+    }
+    return ids
+  }
+
   private func tableExists(_ name: String) -> Bool {
     var exists = false
     try? withStatement("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?") {

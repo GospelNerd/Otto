@@ -123,8 +123,10 @@ struct OttoBuddyTests {
         hasPreferredName: true, hasBot: true, hasGivenTask: true, hasUsedVoiceCommand: true,
         hasMorningBrief: true),
       botName: nil)
-    #expect(items.last?.id == .ottoOnScreen)
-    #expect(items.last?.isComplete == false)
+    // Later items (such as desktop control) may follow it, so look it up by id, not position.
+    let onScreen = items.first { $0.id == .ottoOnScreen }
+    #expect(onScreen != nil)
+    #expect(onScreen?.isComplete == false)
   }
 
   /// Opt-in visual check: set OTTO_BUDDY_SNAPSHOT_DIR to render each state to PNG.

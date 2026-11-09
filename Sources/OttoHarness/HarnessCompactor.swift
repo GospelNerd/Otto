@@ -89,7 +89,8 @@ public struct HarnessCompactor: Sendable {
   ) async -> Outcome {
     let unchanged = Outcome(session: session, foldedMessages: 0, usage: nil)
     let window = max(4_096, contextWindow)
-    let prompt = Self.promptTokens(session: session, pending: pending, overheadTokens: overheadTokens)
+    let prompt = Self.promptTokens(
+      session: session, pending: pending, overheadTokens: overheadTokens)
     let overTrigger = Double(prompt) >= Double(window) * policy.triggerFraction
     let tooManyMessages = session.messages.count + 1 >= policy.maximumLiveMessages
     guard force || overTrigger || tooManyMessages else { return unchanged }

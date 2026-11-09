@@ -133,7 +133,7 @@ struct WorkspaceView: View {
       activeTheme.isLightAppearance ? .light : .dark
     )
     .alert("Persistence notice", isPresented: errorBinding) {
-      Button("Dismiss", role: .cancel) {}
+      Button("Dismiss", role: .cancel) { store.dismissPersistenceError() }
     } message: {
       Text(store.persistenceError ?? "Unknown database error")
     }
@@ -620,7 +620,10 @@ struct WorkspaceView: View {
   }
 
   private var errorBinding: Binding<Bool> {
-    Binding(get: { store.persistenceError != nil }, set: { _ in })
+    Binding(
+      get: { store.persistenceError != nil },
+      set: { if !$0 { store.dismissPersistenceError() } }
+    )
   }
 
   /// Current app navigation and conversation actions.

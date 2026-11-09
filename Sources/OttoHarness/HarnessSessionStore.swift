@@ -124,10 +124,11 @@ public actor HarnessSessionStore {
       "Uncertain tool: \($0.name), call \($0.callID). Verify its external result before repeating it."
     }
     if let compaction = session.compaction {
-      return (uncertain + [
-        "Summary of the earlier conversation (older messages were compacted to fit the model's context window):\n"
-          + compaction.summary
-      ]).joined(separator: "\n")
+      return
+        (uncertain + [
+          "Summary of the earlier conversation (older messages were compacted to fit the model's context window):\n"
+            + compaction.summary
+        ]).joined(separator: "\n")
     }
     return String((uncertain + legacyArchiveLines(session)).joined(separator: "\n").prefix(8_000))
   }

@@ -293,11 +293,15 @@ public struct DesktopSnapshotTool: OttoTool {
     var arguments = ["snapshot"]
     if let app = try DesktopCommandSupport.validatedApp(input.app) { arguments += ["--app", app] }
     if input.skeleton == true { arguments.append("--skeleton") }
-    if let root = input.root { arguments += ["--root", try DesktopCommandSupport.validatedRef(root)] }
+    if let root = input.root {
+      arguments += ["--root", try DesktopCommandSupport.validatedRef(root)]
+    }
     arguments += try DesktopCommandSupport.validatedSurface(input.surface)
     if input.interactiveOnly != false { arguments.append("-i") }
     if input.compact != false { arguments.append("--compact") }
-    if let depth = input.maxDepth, depth > 0 { arguments += ["--max-depth", String(min(depth, 50))] }
+    if let depth = input.maxDepth, depth > 0 {
+      arguments += ["--max-depth", String(min(depth, 50))]
+    }
     if let waitFor = input.waitFor, !waitFor.isEmpty { arguments += ["--wait-for", waitFor] }
     arguments += DesktopCommandSupport.timeoutArgument(input.timeoutMs)
     return try await DesktopCommandSupport.run(
@@ -379,10 +383,13 @@ public struct DesktopFindTool: OttoTool {
       matched = true
     }
     guard matched else {
-      throw ToolRegistryError.invalidInput("Give at least one of role, name, text, value or nativeId")
+      throw ToolRegistryError.invalidInput(
+        "Give at least one of role, name, text, value or nativeId")
     }
     if input.exact == true { arguments.append("--exact") }
-    if let root = input.root { arguments += ["--root", try DesktopCommandSupport.validatedRef(root)] }
+    if let root = input.root {
+      arguments += ["--root", try DesktopCommandSupport.validatedRef(root)]
+    }
     arguments += try DesktopCommandSupport.validatedSurface(input.surface)
     if let limit = input.limit, limit >= 0 { arguments += ["--limit", String(min(limit, 500))] }
     arguments += DesktopCommandSupport.timeoutArgument(input.timeoutMs)
@@ -467,7 +474,8 @@ public struct DesktopClickTool: OttoTool {
         "kind": .stringSchema(description: "click, right_click or double_click"),
         "headed": .booleanSchema(
           description: "Real mouse click that focuses the window; needs the person's approval"),
-        "timeoutMs": .integerSchema(description: "Wait for the element to be actionable (default 5000)"),
+        "timeoutMs": .integerSchema(
+          description: "Wait for the element to be actionable (default 5000)"),
       ],
       required: ["ref", "label"]),
     outputSchema: .objectSchema(), requiredScopes: [.canvasWrite], riskLevel: .reversible
@@ -534,7 +542,8 @@ public struct DesktopTypeTool: OttoTool {
         "replace": .booleanSchema(description: "Set the whole value instead of inserting"),
         "headed": .booleanSchema(
           description: "Real keystrokes that focus the window; needs the person's approval"),
-        "timeoutMs": .integerSchema(description: "Wait budget in ms (default 5000 + 30 per character)"),
+        "timeoutMs": .integerSchema(
+          description: "Wait budget in ms (default 5000 + 30 per character)"),
       ],
       required: ["ref", "text", "label"]),
     outputSchema: .objectSchema(), requiredScopes: [.canvasWrite], riskLevel: .reversible
@@ -570,7 +579,9 @@ public struct DesktopActInput: Codable, Sendable {
   public var label: String
   public var value: String?
   public var timeoutMs: Int?
-  public init(ref: String, action: String, label: String, value: String? = nil, timeoutMs: Int? = nil) {
+  public init(
+    ref: String, action: String, label: String, value: String? = nil, timeoutMs: Int? = nil
+  ) {
     self.ref = ref
     self.action = action
     self.label = label
@@ -601,7 +612,8 @@ public struct DesktopActTool: OttoTool {
             "select, toggle, check, uncheck, expand, collapse, focus, clear or scroll_to"),
         "label": DesktopCommandSupport.labelProperty,
         "value": .stringSchema(description: "Option to select (select only)"),
-        "timeoutMs": .integerSchema(description: "Wait for the element to be actionable (default 5000)"),
+        "timeoutMs": .integerSchema(
+          description: "Wait for the element to be actionable (default 5000)"),
       ],
       required: ["ref", "action", "label"]),
     outputSchema: .objectSchema(), requiredScopes: [.canvasWrite], riskLevel: .reversible
@@ -678,8 +690,12 @@ public struct DesktopScrollTool: OttoTool {
     if headed, !context.confirmed {
       throw ToolRegistryError.confirmationRequired(Self.definition.name)
     }
-    var arguments = ["scroll", try DesktopCommandSupport.validatedRef(input.ref), "--direction", direction]
-    if let amount = input.amount, amount > 0 { arguments += ["--amount", String(min(amount, 100))] }
+    var arguments = [
+      "scroll", try DesktopCommandSupport.validatedRef(input.ref), "--direction", direction,
+    ]
+    if let amount = input.amount, amount > 0 {
+      arguments += ["--amount", String(min(amount, 100))]
+    }
     if headed { arguments.append("--headed") }
     return try await DesktopCommandSupport.run(runner, arguments, timeout: .seconds(30))
   }
@@ -709,7 +725,8 @@ public struct DesktopPressTool: OttoTool {
       properties: [
         "keys": .stringSchema(description: "Key combo, e.g. return, escape, cmd+s, shift+tab"),
         "app": DesktopCommandSupport.appProperty,
-        "label": .stringSchema(description: "What the keys do (\"save the note\"), for the approval card"),
+        "label": .stringSchema(
+          description: "What the keys do (\"save the note\"), for the approval card"),
       ],
       required: ["keys", "label"]),
     outputSchema: .objectSchema(), requiredScopes: [.canvasWrite], riskLevel: .reversible
@@ -785,7 +802,8 @@ public struct DesktopWaitTool: OttoTool {
         "windowTitle": .stringSchema(description: "Wait until a window with this title appears"),
         "event": .stringSchema(description: "Lifecycle event to wait for"),
         "ref": .stringSchema(description: "Element ref to wait on"),
-        "predicate": .stringSchema(description: "exists (default), enabled, visible, actionable or value"),
+        "predicate": .stringSchema(
+          description: "exists (default), enabled, visible, actionable or value"),
         "value": .stringSchema(description: "Expected value for predicate=value"),
         "ms": .integerSchema(description: "Plain pause in milliseconds (last resort)"),
         "timeoutMs": .integerSchema(description: "Give up after this long (default 30000)"),
@@ -924,7 +942,8 @@ public struct DesktopScreenshotTool: OttoTool {
       }
       throw ToolRegistryError.invalidInput("\(code): \(message).\(note)")
     }
-    let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int) ?? 0
+    let size =
+      (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int) ?? 0
     guard size > 0 else {
       throw ToolRegistryError.invalidInput("agent-desktop reported success but wrote no file")
     }

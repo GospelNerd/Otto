@@ -82,7 +82,9 @@ public enum SkillAudience: Codable, Equatable, Hashable, Sendable {
 public struct SkillParser {
   /// Reads `name` and `description` from SKILL.md frontmatter, including YAML folded (`>`) and
   /// literal (`|`) blocks. Missing names fall back to the folder name.
-  public static func metadata(_ text: String, folderName: String) -> (name: String, description: String) {
+  public static func metadata(_ text: String, folderName: String) -> (
+    name: String, description: String
+  ) {
     var lines = text.components(separatedBy: .newlines)
     guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else {
       return (folderName, firstParagraph(text))
@@ -208,7 +210,9 @@ public struct SkillScanner: Sendable {
   /// Skill uses Claude Code logged in the last `days` days. Codex and Hermes logs list every
   /// available skill at session start, so they cannot tell "available" from "used" and are not
   /// counted.
-  public func claudeCodeUsage(days: Int = 30, now: Date = Date()) -> [String: (count: Int, last: Date)] {
+  public func claudeCodeUsage(days: Int = 30, now: Date = Date()) -> [String: (
+    count: Int, last: Date
+  )] {
     let projects = home.appending(path: ".claude/projects", directoryHint: .isDirectory)
     let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
     guard
@@ -323,7 +327,8 @@ public final class SkillLibraryStore: ObservableObject {
     else { return }
     let folder = URL(fileURLWithPath: otto.path).deletingLastPathComponent()
     // Only ever remove a folder inside Otto's own library.
-    guard folder.standardizedFileURL.path.hasPrefix(scanner.root(.otto).standardizedFileURL.path + "/")
+    guard
+      folder.standardizedFileURL.path.hasPrefix(scanner.root(.otto).standardizedFileURL.path + "/")
     else { return }
     try FileManager.default.trashItem(at: folder, resultingItemURL: nil)
     updateEntry(entry.name) { $0.locations.removeAll { $0.source == .otto } }

@@ -104,20 +104,25 @@ struct HarnessCompactionTests {
       #"{"data":[{"id":"anthropic/claude-sonnet-4.5","context_length":1000000,"top_provider":{"context_length":200000}}]}"#
         .utf8)
     #expect(
-      HarnessContextWindow.tokens(inModelsListing: openRouter, modelID: "anthropic/claude-sonnet-4.5")
+      HarnessContextWindow.tokens(
+        inModelsListing: openRouter, modelID: "anthropic/claude-sonnet-4.5")
         == 1_000_000)
     let lmStudio = Data(
-      #"{"data":[{"id":"qwen3-8b","max_context_length":131072,"loaded_context_length":8192}]}"#.utf8)
+      #"{"data":[{"id":"qwen3-8b","max_context_length":131072,"loaded_context_length":8192}]}"#.utf8
+    )
     #expect(HarnessContextWindow.tokens(inModelsListing: lmStudio, modelID: "qwen3-8b") == 8_192)
     let gemini = Data(#"{"data":[{"id":"models/gemini-2.5-pro","context_window":1048576}]}"#.utf8)
-    #expect(HarnessContextWindow.tokens(inModelsListing: gemini, modelID: "gemini-2.5-pro") == 1_048_576)
+    #expect(
+      HarnessContextWindow.tokens(inModelsListing: gemini, modelID: "gemini-2.5-pro") == 1_048_576)
     let vllm = Data(#"{"data":[{"id":"llama","max_model_len":32768}]}"#.utf8)
     #expect(HarnessContextWindow.tokens(inModelsListing: vllm, modelID: "llama") == 32_768)
     #expect(HarnessContextWindow.tokens(inModelsListing: vllm, modelID: "other") == nil)
 
     let anthropic = Data(
       #"{"data":[{"id":"claude-opus-5-5","max_input_tokens":1000000,"max_tokens":128000}]}"#.utf8)
-    #expect(HarnessContextWindow.tokens(inModelsListing: anthropic, modelID: "claude-opus-5-5") == 1_000_000)
+    #expect(
+      HarnessContextWindow.tokens(inModelsListing: anthropic, modelID: "claude-opus-5-5")
+        == 1_000_000)
 
     #expect(HarnessContextWindow.knownTokens(modelID: "claude-opus-5-5") == 1_000_000)
     #expect(HarnessContextWindow.knownTokens(modelID: "anthropic/claude-opus-4.6") == 1_000_000)

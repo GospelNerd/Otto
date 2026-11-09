@@ -163,7 +163,8 @@ struct DesktopBuiltinPluginTests {
     defer { try? FileManager.default.removeItem(at: home) }
     let installed = HarnessPluginCatalog.plugins(
       for: .claudeCode, workspacePath: home.path, homeDirectory: home.path, desktopInstalled: true)
-    #expect(installed.contains { $0.name == "Desktop" && $0.source == HarnessPluginCatalog.ottoSource })
+    #expect(
+      installed.contains { $0.name == "Desktop" && $0.source == HarnessPluginCatalog.ottoSource })
     #expect(installed.last?.name == "Desktop")
     let missing = HarnessPluginCatalog.plugins(
       for: .claudeCode, workspacePath: home.path, homeDirectory: home.path, desktopInstalled: false)

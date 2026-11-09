@@ -549,11 +549,21 @@ public final class CanvasStore: ObservableObject {
     let snapshot = snapshot
     do {
       try await persistence.save(snapshot)
+      // A completed write disproves an earlier failure notice. Without this the notice outlives
+      // the condition that raised it — a momentarily full disk leaves Otto warning that changes
+      // are not being saved while it saves them.
+      persistenceError = nil
     } catch {
       persistenceError = error.localizedDescription
     }
     try? await Task.sleep(for: persistCoalesceWindow)
     return true
+  }
+
+  /// Clears the persistence notice. The alert that shows it cannot clear published state
+  /// itself, so dismissing has to come back through the store or the notice returns at once.
+  public func dismissPersistenceError() {
+    persistenceError = nil
   }
 
   /// Writes any coalesced-but-unsaved changes now. Call on scene background/termination.
@@ -568,6 +578,10 @@ public final class CanvasStore: ObservableObject {
     persistIsDirty = false
     do {
       try await persistence.save(snapshot)
+      // A completed write disproves an earlier failure notice. Without this the notice outlives
+      // the condition that raised it — a momentarily full disk leaves Otto warning that changes
+      // are not being saved while it saves them.
+      persistenceError = nil
     } catch {
       persistenceError = error.localizedDescription
     }

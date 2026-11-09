@@ -47,7 +47,8 @@ final class DesktopControlSetupModel: ObservableObject {
 
   func install() async {
     guard let brew = brewPath else {
-      message = "Homebrew is not installed. Run `\(AgentDesktopLocator.installCommand)` in Terminal once Homebrew is set up, or install from github.com/vercel-labs/agent-desktop."
+      message =
+        "Homebrew is not installed. Run `\(AgentDesktopLocator.installCommand)` in Terminal once Homebrew is set up, or install from github.com/vercel-labs/agent-desktop."
       return
     }
     busy = "Installing agent-desktop with Homebrew…"
@@ -75,7 +76,8 @@ final class DesktopControlSetupModel: ObservableObject {
         ? "Access is already granted."
         : "Follow the guide in System Settings, then come back here. Otto is the app to add."
     } catch {
-      message = "Could not start the guide: \(error.localizedDescription). Open System Settings › Privacy & Security › Accessibility and add Otto."
+      message =
+        "Could not start the guide: \(error.localizedDescription). Open System Settings › Privacy & Security › Accessibility and add Otto."
       Self.openPrivacyPane("Privacy_Accessibility")
     }
     busy = nil

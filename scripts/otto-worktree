@@ -4,8 +4,10 @@ set -euo pipefail
 script_dir=${0:A:h}
 repository_root=${script_dir:h}
 worktrees_root=${OTTO_WORKTREES_ROOT:-${MUSE_WORKTREES_ROOT:-${repository_root:h}/Otto-worktrees}}
-# Worktrees created before the rename stay where they are, in the sibling Muse-worktrees/.
-# They are found for removal but never moved.
+# Worktrees are found for removal wherever they already live, and never moved:
+# the sibling Otto-worktrees/ (the default root, which OTTO_WORKTREES_ROOT may
+# point away from) and the pre-rename sibling Muse-worktrees/.
+default_worktrees_root=${repository_root:h}/Otto-worktrees
 legacy_worktrees_root=${repository_root:h}/Muse-worktrees
 
 usage() {
@@ -16,8 +18,9 @@ Usage:
   scripts/otto-worktree list
 
 Creates agent worktrees under ../Otto-worktrees on unique codex/<task-name>
-branches. Existing worktrees in ../Muse-worktrees (from before the rename) are
-still found by remove. Removal refuses dirty worktrees.
+branches, or under $OTTO_WORKTREES_ROOT when that is set. Worktrees already in
+../Otto-worktrees or ../Muse-worktrees are still found by remove, wherever the
+root now points. Removal refuses dirty worktrees.
 EOF
 }
 
@@ -37,10 +40,12 @@ case $action in
     branch_name=codex/$task_name
     worktree_path=$worktrees_root/$task_name
     [[ ! -e $worktree_path ]] || { print -u2 "Path already exists: $worktree_path"; exit 17; }
-    [[ ! -e $legacy_worktrees_root/$task_name ]] || {
-      print -u2 "A pre-rename worktree already uses this name: $legacy_worktrees_root/$task_name"
-      exit 17
-    }
+    for other_root in $default_worktrees_root $legacy_worktrees_root; do
+      if [[ $other_root != $worktrees_root && -e $other_root/$task_name ]]; then
+        print -u2 "A worktree already uses this name: $other_root/$task_name"
+        exit 17
+      fi
+    done
     /bin/mkdir -p "$worktrees_root"
     if /usr/bin/git -C "$repository_root" show-ref --verify --quiet "refs/heads/$branch_name"; then
       /usr/bin/git -C "$repository_root" worktree add "$worktree_path" "$branch_name"
@@ -55,8 +60,13 @@ case $action in
     (( $# == 1 )) || { usage >&2; exit 2; }
     task_name=$1
     worktree_path=$worktrees_root/$task_name
-    if [[ ! -d $worktree_path && -d $legacy_worktrees_root/$task_name ]]; then
-      worktree_path=$legacy_worktrees_root/$task_name
+    if [[ ! -d $worktree_path ]]; then
+      for other_root in $default_worktrees_root $legacy_worktrees_root; do
+        if [[ -d $other_root/$task_name ]]; then
+          worktree_path=$other_root/$task_name
+          break
+        fi
+      done
     fi
     [[ -d $worktree_path ]] || { print -u2 "Worktree not found: $worktree_path"; exit 2; }
     changes=$(/usr/bin/git -C "$worktree_path" status --porcelain=v1 --untracked-files=normal)

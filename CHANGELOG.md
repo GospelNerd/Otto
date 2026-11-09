@@ -4,11 +4,23 @@ All notable changes to Otto (called Muse before 0.2.0) are documented here. Each
 published verbatim as the in-app update notes and on the download site, so write for users:
 lead with what they can now do, not how it was implemented.
 
-## Unreleased
+## 0.2.17 — 2026-11-09
 
 ### New
 
+- **Bots can use your Mac apps.** With the free `agent-desktop` tool installed and Accessibility allowed in Settings → Desktop Control, bots can read and operate Mail, Notes, Finder, Slack and the menu bar through the accessibility tree, without screenshots or taking focus. Real mouse or key input and screenshots always ask you first with Allow or Deny.
 - **Activity shows what needs you first.** Chat → Activity now opens with the things waiting on a person: drafts to approve, questions, permission requests and stuck agents, each with its actions in place. Under it, today's work is one line per bot or automation, failures first with the reason when there is one. Sessions interrupted by a restart fold into a single line. "Show everything" brings back the full stream, and search is unchanged.
+
+### Fixed
+
+- **Signing in through the browser hands off to apps properly.** A sign-in that ends by opening an app (an OAuth callback such as `otto://` or another app's link) now opens that app instead of showing an error page.
+- **Each chat keeps its own browser tabs.** Switching conversations brings back that chat's tabs in the side panel instead of another chat's.
+- **Otto's internal "background work finished" notes stay out of your chats.** Agents still get them; you only see their reply.
+- **A full disk now says it is a full disk.** When the Mac ran out of space, Otto reported "database operation failed: database or disk is full", which sent people looking at their workspace when nothing was wrong with it. Otto now names the disk and how much room is left, so it is clear what to fix.
+- **The persistence notice can be dismissed.** One failed save used to leave "Persistence notice" on screen for the rest of the session: Dismiss did nothing and the alert came straight back. It now closes when you dismiss it, and clears itself as soon as a save succeeds — so a brief moment of low disk space no longer leaves Otto warning that your changes are not being saved while it is saving them.
+- **Links to files read properly on Telegram and iMessage.** A link whose target has spaces or brackets, such as a document in "Muse Workspace", or a link with a title, arrived as raw Markdown on your phone. It now reads like "Report (in Otto)". Thanks to Sukhpal Gill (onlinegill) for PR #64.
+- **`otto-mcp` builds on Linux.** Part of the headless Linux build (#47); nothing changes on Mac. Thanks to Justin Philip Flores (GospelNerd) for PR #63.
+- **Otto remembers what it knew before the update.** After the move from `.muse` to `.otto`, a workspace's memory search could miss most older notes, decisions and handoffs even though they were still on disk. Otto now notices when its search index is missing records and rebuilds it (issue #67). Thanks to Sukhpal Gill (onlinegill) for PR #72.
 
 ## 0.2.16 — 2026-11-04
 

@@ -173,7 +173,8 @@ struct DesktopToolsTests {
     let tool = DesktopWaitTool(runner: runner)
     _ = try await tool.call(
       DesktopWaitInput(app: "Mail", text: "Sent", timeoutMs: 5_000), context: agent)
-    #expect(await runner.lastCall() == ["wait", "--text", "Sent", "--app", "Mail", "--timeout", "5000"])
+    #expect(
+      await runner.lastCall() == ["wait", "--text", "Sent", "--app", "Mail", "--timeout", "5000"])
     await #expect(throws: ToolRegistryError.self) {
       try await tool.call(DesktopWaitInput(text: "a", windowTitle: "b"), context: agent)
     }
@@ -230,8 +231,11 @@ struct DesktopToolsTests {
 
     let granted = try JSONDecoder().decode(
       JSONValue.self,
-      from: Data(json.replacingOccurrences(of: "\"accessibility\":{\"state\":\"denied\"}",
-        with: "\"accessibility\":{\"state\":\"granted\"}").utf8))
+      from: Data(
+        json.replacingOccurrences(
+          of: "\"accessibility\":{\"state\":\"denied\"}",
+          with: "\"accessibility\":{\"state\":\"granted\"}"
+        ).utf8))
     let ready = DesktopControlStatus.parse(granted, executable: nil)
     #expect(ready.isReady)
     #expect(ready.setup == nil)
@@ -243,7 +247,8 @@ struct DesktopToolsTests {
     let registry = ToolRegistry()
     let runner = FakeDesktopRunner()
     try await registry.register(
-      DesktopScreenshotTool(runner: runner, workspacePath: FileManager.default.temporaryDirectory.path))
+      DesktopScreenshotTool(
+        runner: runner, workspacePath: FileManager.default.temporaryDirectory.path))
     await #expect(throws: ToolRegistryError.confirmationRequired("desktop.screenshot")) {
       try await registry.call(name: "desktop.screenshot", input: .object([:]), context: agent)
     }
@@ -255,7 +260,10 @@ struct DesktopToolsTests {
     #expect(
       DesktopApprovalSummary.text(
         toolName: "desktop.click",
-        input: ["ref": .string("@s1:e8"), "label": .string("the Archive button in Mail"), "headed": .bool(true)])
+        input: [
+          "ref": .string("@s1:e8"), "label": .string("the Archive button in Mail"),
+          "headed": .bool(true),
+        ])
         == "Click the Archive button in Mail with real mouse input (takes focus)")
     #expect(
       DesktopApprovalSummary.text(

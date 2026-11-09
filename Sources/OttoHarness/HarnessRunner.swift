@@ -92,7 +92,8 @@ public struct HarnessRunner: Sendable {
             input: input,
             tools: request.tools,
             providerContinuation: providerContinuation))
-      } catch where round == 0 && !retriedOverflow && request.contextWindow != nil
+      } catch
+        where round == 0 && !retriedOverflow && request.contextWindow != nil
         && HarnessContextWindow.isOverflow(error)
       {
         // The window was smaller than Otto believed (an unknown model, or a local server started

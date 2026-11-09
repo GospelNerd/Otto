@@ -46,7 +46,8 @@ struct SkillsSnapshotTests {
     }
     .environmentObject(services.messageQueue)
     .environment(\.ottoPalette, palette)
-    try render(place, size: CGSize(width: 1440, height: 900), to: "\(output)/skills-\(themeID).png",
+    try render(
+      place, size: CGSize(width: 1440, height: 900), to: "\(output)/skills-\(themeID).png",
       light: theme.isLightAppearance)
 
     let used = services.skills.entries.first { $0.uses > 0 } ?? services.skills.entries.first
@@ -55,7 +56,8 @@ struct SkillsSnapshotTests {
       SkillsView(services: services, library: services.skills, selected: used?.name)
     }
     .environment(\.ottoPalette, palette)
-    try render(detail, size: CGSize(width: 1280, height: 860),
+    try render(
+      detail, size: CGSize(width: 1280, height: 860),
       to: "\(output)/skills-detail-\(themeID).png", light: theme.isLightAppearance)
   }
 

@@ -35,6 +35,33 @@ struct ProjectBrainStoreTests {
     #expect(restored.recordIDs == ["recover-note"])
   }
 
+  @Test("An index that misses a canonical file is rebuilt when the store reopens")
+  func mergedIndexMissingRecords() async throws {
+    // A .muse → .otto workspace merge can leave a brain folder whose index came with only one
+    // side's records: an index exists, yet a canonical file was never written through it.
+    // Search must not stay blind to the records that index never saw (issue #67).
+    let donorRoot = temporaryRoot()
+    let donor = try ProjectBrainStore(rootPath: donorRoot, project: "fixture")
+    _ = try await donor.write(
+      MemoryRecord(
+        id: "merged-note", type: .wiki, project: "fixture", title: "Merged",
+        body: "Knowledge from the merged side", author: "user"), expectedRevision: nil)
+
+    let root = temporaryRoot()
+    let store = try ProjectBrainStore(rootPath: root, project: "fixture")
+    _ = try await store.write(
+      MemoryRecord(
+        id: "indexed-note", type: .wiki, project: "fixture", title: "Indexed",
+        body: "Knowledge the index holds", author: "user"), expectedRevision: nil)
+    try FileManager.default.copyItem(
+      at: URL(fileURLWithPath: donorRoot).appending(path: "wiki/merged-note.md"),
+      to: URL(fileURLWithPath: root).appending(path: "wiki/merged-note.md"))
+
+    let reopened = try ProjectBrainStore(rootPath: root, project: "fixture")
+    let hits = try await reopened.search("merged side")
+    #expect(hits.contains { $0.id == "merged-note" })
+  }
+
   @Test("Bot context loads only indexed records owned by that bot")
   func botContextAvoidsUnrelatedHistory() async throws {
     let root = temporaryRoot()

@@ -528,7 +528,8 @@ struct SpatialWorkflowTests {
       browsers.first(where: { $0.id == second.node.id })?.browserOwnerAgentID == secondAgentID)
   }
 
-  @Test("Implicit agent tabs stay in their conversation; explicit targets do not attach to its drawer")
+  @Test(
+    "Implicit agent tabs stay in their conversation; explicit targets do not attach to its drawer")
   func agentOpenTabKeepsBrowserOwnership() async throws {
     let canvas = OttoCanvas(name: "Isolated browser tabs")
     let store = await CanvasStore(
@@ -545,7 +546,9 @@ struct SpatialWorkflowTests {
     ).decode(NodeCreateOutput.self)
     let firstID = UUID()
     let secondID = UUID()
-    func openTab(_ url: String, for agentID: UUID, nodeID: UUID? = nil) async throws -> BrowserRuntimeState {
+    func openTab(_ url: String, for agentID: UUID, nodeID: UUID? = nil) async throws
+      -> BrowserRuntimeState
+    {
       try await registry.call(
         name: "browser.open_tab",
         input: try JSONValue.encode(BrowserOpenTabInput(url: url, nodeID: nodeID)),
@@ -565,18 +568,22 @@ struct SpatialWorkflowTests {
 
     // A helper can intentionally act in Browser, but that must never attach the workspace's
     // browser to its drawer or change persistent ownership.
-    let explicit = try await openTab("https://intentional.example", for: firstID, nodeID: workspace.node.id)
+    let explicit = try await openTab(
+      "https://intentional.example", for: firstID, nodeID: workspace.node.id)
     #expect(explicit.nodeID == workspace.node.id)
     #expect(await requests.latest == lastOwnedRequest)
     let browsers = await store.activeCanvas.nodes.filter { $0.kind == .browser }
     #expect(browsers.count == 3)
-    #expect(browsers.first { $0.id == first.nodeID }?.browserSession?.tabs.map(\.url)
-      == ["https://first.example", "https://third.example"])
-    #expect(browsers.first { $0.id == second.nodeID }?.browserSession?.tabs.map(\.url)
-      == ["https://second.example"])
+    #expect(
+      browsers.first { $0.id == first.nodeID }?.browserSession?.tabs.map(\.url)
+        == ["https://first.example", "https://third.example"])
+    #expect(
+      browsers.first { $0.id == second.nodeID }?.browserSession?.tabs.map(\.url)
+        == ["https://second.example"])
     #expect(browsers.first { $0.id == workspace.node.id }?.browserOwnerAgentID == nil)
-    #expect(browsers.first { $0.id == workspace.node.id }?.browserSession?.tabs.map(\.url)
-      == ["https://workspace.example", "https://intentional.example"])
+    #expect(
+      browsers.first { $0.id == workspace.node.id }?.browserSession?.tabs.map(\.url)
+        == ["https://workspace.example", "https://intentional.example"])
   }
 
   @Test("Concurrent agent opens create one browser with durable tabs")

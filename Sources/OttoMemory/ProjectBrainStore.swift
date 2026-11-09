@@ -40,19 +40,33 @@ public actor ProjectBrainStore {
     }
     let databasePath = (rootPath as NSString).appendingPathComponent("index/brain.db")
     let indexExisted = fileManager.fileExists(atPath: databasePath)
+    // The canonical record ids on disk, by folder. A file name is its record id.
+    let filesByDirectory: [(directory: String, ids: Set<String>)] = MemoryRecordType.allCases.map {
+      type in
+      let directory = (rootPath as NSString).appendingPathComponent(type.directoryName)
+      let names = (try? fileManager.contentsOfDirectory(atPath: directory)) ?? []
+      return (
+        type.directoryName,
+        Set(names.filter { $0.hasSuffix(".md") }.map { ($0 as NSString).deletingPathExtension })
+      )
+    }
     let hasUnindexedFiles =
-      !indexExisted
-      && MemoryRecordType.allCases.contains { type in
-        let directory = (rootPath as NSString).appendingPathComponent(type.directoryName)
-        return (try? fileManager.contentsOfDirectory(atPath: directory))?.contains {
-          $0.hasSuffix(".md")
-        } == true
-      }
+      !indexExisted && filesByDirectory.contains { !$0.ids.isEmpty }
     searchIndex = try BrainSearchIndex(databasePath: databasePath)
     // Defer record I/O to the actor's executor. Initialization is called by the desktop's
     // main actor and must not scan cloud-backed history before the UI and mobile host start.
+    var indexMissesFiles = false
+    if indexExisted {
+      // An index that came from the other side of a workspace merge, or from a crash between a
+      // file write and its index write, covers fewer records than the folder holds. Rebuild
+      // rather than leave search blind to files it never saw.
+      let indexed = searchIndex.indexedIDs()
+      indexMissesFiles = filesByDirectory.contains { entry in
+        !entry.ids.isSubset(of: indexed)
+      }
+    }
     let schemaRequiresRebuild = searchIndex.requiresRebuild
-    needsSearchIndexRebuild = hasUnindexedFiles || schemaRequiresRebuild
+    needsSearchIndexRebuild = hasUnindexedFiles || schemaRequiresRebuild || indexMissesFiles
   }
 
   private static let directories = [
