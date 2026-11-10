@@ -1,6 +1,7 @@
 import Foundation
 import OttoModels
 import OttoTools
+
 #if canImport(SQLite3)
   import SQLite3
 #else
@@ -555,10 +556,23 @@ public actor SQLiteWorkspaceStore {
 
   /// Free space on the volume holding the store, or nil when it cannot be determined.
   private func availableBytes() -> Int64? {
+    Self.availableBytes(atPath: path)
+  }
+
+  /// Free space on the volume holding `path`, or nil when it cannot be determined.
+  /// Darwin uses important-usage capacity, matching the previous behaviour; other platforms
+  /// use the ordinary volume capacity Foundation reports.
+  static func availableBytes(atPath path: String) -> Int64? {
     let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
-    return try? directory.resourceValues(
-      forKeys: [.volumeAvailableCapacityForImportantUsageKey]
-    ).volumeAvailableCapacityForImportantUsage
+    #if canImport(Darwin)
+      return try? directory.resourceValues(
+        forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+      ).volumeAvailableCapacityForImportantUsage
+    #else
+      return (try? directory.resourceValues(forKeys: [.volumeAvailableCapacityKey]))
+        .flatMap(\.volumeAvailableCapacity)
+        .map(Int64.init)
+    #endif
   }
 
   // An exhausted volume surfaces as SQLITE_FULL, and sometimes only as a write or fsync
